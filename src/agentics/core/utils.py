@@ -32,6 +32,11 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
+from typing import List, Type, TypeVar
+from pydantic import BaseModel, Field, create_model
+
+A = TypeVar("A", bound=BaseModel)
+
 load_dotenv()
 
 
@@ -284,3 +289,18 @@ class TransductionSpeed(ProgressColumn):
             return Text("? states/s", style="progress.data.speed")
         return Text(f"{speed:.3f} states/s", style="progress.data.speed")
 
+
+def make_states_list_model(item_type: Type[A]) -> Type[BaseModel]:
+    """
+    Dynamically create a Pydantic model:
+
+        class ATypeList(BaseModel):
+            states: List[item_type] = []
+
+    but with proper validation and default_factory.
+    """
+    # Name is optional; Pydantic will auto-unique if reused.
+    return create_model(
+        "ATypeList",
+        states=(List[item_type], Field(default_factory=list))
+    )

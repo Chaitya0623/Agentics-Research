@@ -43,6 +43,8 @@ from agentics.core.utils import (
     is_str_or_list_of_str,
     remap_dict_keys,
     sanitize_dict_keys,
+    make_states_list_model,
+    chunk_list
 )
 
 AG = TypeVar("AG", bound="AG")
@@ -67,6 +69,46 @@ class AG(BaseModel, Generic[T]):
         None,
         description="""this is the type in common among all element of the list""",
     )
+    states: List[BaseModel] = []
+    tools: Optional[List[Any]] = Field(None, exclude=True)
+    transduce_fields: Optional[List[str]] = Field(
+        None,
+        description="""this is the list of field that will be used for the transduction, both incoming and outcoming""",
+    )
+    instructions: Optional[str] = Field(
+        """Generate an object of the specified type from the following input.""",
+        description="Special instructions to be given to the agent for executing transduction",
+    )
+    transduction_type: Optional[str] = Field(
+        "amap",
+        description="Type of transduction to be used, amap, areduce",
+    )
+    llm: Any = Field(default_factory=get_llm_provider, exclude=True)
+
+    prompt_template: Optional[str] = Field(
+        None,
+        description="Langchain style prompt pattern to be used when provided as an input for a transduction.  Refer to https://python.langchain.com/docs/concepts/prompt_templates/ ",
+    )
+    reasoning: Optional[bool] = None
+    max_iter: int = Field(
+        3,
+        description="Max number of iterations for the agent to provide a final transduction when using tools.",
+    )
+    skip_intentional_definition: bool = Field(
+        False,
+        description="if True, don't compose intentional instruction for Crew Task",
+    )
+    transduction_logs_path: Optional[str] = Field(
+        None,
+        description="""If not null, the specified file will be created and used to save the intermediate results of transduction from each batch. The file will be updated in real time and can be used for monitoring""",
+    )
+    transduction_timeout: float | None = None
+    verbose_transduction: bool = True
+    verbose_agent: bool = False
+    areduce_batch_size: int = Field(10,
+        description="The size of the bathes to be used when transduction type is areduce")
+    areduce_batches:List[BaseModel] = []
+
     crew_prompt_params: Optional[Dict[str, str]] = Field(
         {
             "role": "Task Executor",
@@ -76,37 +118,6 @@ class AG(BaseModel, Generic[T]):
         },
         description="prompt parameter for initializing Crew and Task",
     )
-    instructions: Optional[str] = Field(
-        """Generate an object of the specified type from the following input.""",
-        description="Special instructions to be given to the agent for executing transduction",
-    )
-    llm: Any = Field(default_factory=get_llm_provider, exclude=True)
-    max_iter: int = Field(
-        3,
-        description="Max number of iterations for the agent to provide a final transduction when using tools.",
-    )
-    prompt_template: Optional[str] = Field(
-        None,
-        description="Langchain style prompt pattern to be used when provided as an input for a transduction.  Refer to https://python.langchain.com/docs/concepts/prompt_templates/ ",
-    )
-    reasoning: Optional[bool] = None
-    skip_intentional_definition: bool = Field(
-        False,
-        description="if True, don't compose intentional instruction for Crew Task",
-    )
-    states: List[BaseModel] = []
-    tools: Optional[List[Any]] = Field(None, exclude=True)
-    transduce_fields: Optional[List[str]] = Field(
-        None,
-        description="""this is the list of field that will be used for the transduction, both incoming and outcoming""",
-    )
-    transduction_logs_path: Optional[str] = Field(
-        None,
-        description="""If not null, the specified file will be created and used to save the intermediate results of transduction from each batch. The file will be updated in real time and can be used for monitoring""",
-    )
-    transduction_timeout: float | None = None
-    verbose_transduction: bool = True
-    verbose_agent: bool = False
 
     class Config:
         model_config = {"arbitrary_types_allowed": True}
@@ -135,8 +146,9 @@ class AG(BaseModel, Generic[T]):
         return copy_instance
 
     def filter_states(self, start: int=None, end: int=None) -> AG:
-        self.states = self.states[start:end]
-        return self
+        new_self=self.clone()
+        new_self.states = self.states[start:end]
+        return new_self
     
     def get_random_sample(self, percent: float) -> AG:
         if not (0 <= percent <= 1):
@@ -443,15 +455,37 @@ class AG(BaseModel, Generic[T]):
             input.string= self.llm.call(input.string)
             return input
         
+
+      
+
         if not self.atype and isinstance(other,str):
             return self.llm.call(other)
         
         
         if not self.atype and is_str_or_list_of_str(other):
-            input_messages=AG(states=[AGString(string=x) for x in other])
-            input_messages = await input_messages.amap(llm_call)
-            return [x.string for x in input_messages.states]
+            if self.transduction_type=="amap":
+                input_messages=AG(states=[AGString(string=x) for x in other])
+                input_messages = await input_messages.amap(llm_call)
+                return [x.string for x in input_messages.states]
         
+        if  self.transduction_type =="areduce":
+            if is_str_or_list_of_str(other):
+                chunks= chunk_list(other, chunk_size=self.areduce_batch_size)
+            else:  chunks= chunk_list(other.states, chunk_size=self.areduce_batch_size)
+            if len(chunks)==1:
+                self.transduction_type="amap"
+                self =  await (self << str(chunks[0]))
+                self.transduction_type="areduce"
+                return self
+            else:
+                self.transduction_type="amap"
+                reduced_chunks = await (self << [str(x) for x in chunks])
+                self.transduction_type="areduce"
+                self.areduce_batches += reduced_chunks.states
+                return await (self << reduced_chunks)
+
+
+
         output = self.clone()
         output.states = []
 
@@ -555,7 +589,8 @@ class AG(BaseModel, Generic[T]):
             )
             transduced_results = await pt.execute(
                 *input_prompts,
-                description=f"Transducing  {self.atype.__name__} << {"DefaultType" if not isinstance(other, AG) else other.atype.__name__}",
+                description=f"Transducing  {self.atype.__name__} << {
+                    "DefaultType" if not isinstance(other, AG) else other.atype.__name__}",
             )
         except Exception as e:
             transduced_results = self.states

@@ -4,6 +4,8 @@ from agentics.core.utils import sanitize_field_name
 import pandas as pd
 import csv
 
+import types
+
 class AGString(BaseModel):
     string:Optional[str] = None
 
@@ -246,3 +248,60 @@ def pretty_print_atype(atype, indent: int = 2):
         for arg in args:
             pretty_print_atype(arg, indent + 2)
         print(f"{prefix}]")
+from typing import (
+    Any, Optional, List, Dict, Tuple, Set, Union, Literal,
+    Type, Sequence, Mapping, Annotated
+)
+from pydantic import BaseModel, Field
+from typing import get_origin, get_args
+import datetime
+
+def import_pydantic_from_string(code: str, class_name: str):
+    """
+    Dynamically execute Pydantic class code and return the class object.
+
+    Automatically injects basic typing symbols and pydantic imports
+    so the code can safely reference them even if not explicitly imported.
+    """
+    # Create isolated module namespace
+    module = types.ModuleType("dynamic_module")
+
+    # Preload basic globals that the generated code may need
+    safe_globals = {
+        "__builtins__": __builtins__,
+        # Core pydantic symbols
+        "BaseModel": BaseModel,
+        "Field": Field,
+        # Typing symbols
+        "Any": Any,
+        "Optional": Optional,
+        "List": List,
+        "Dict": Dict,
+        "Tuple": Tuple,
+        "Set": Set,
+        "Union": Union,
+        "Literal": Literal,
+        "Type": Type,
+        "Sequence": Sequence,
+        "Mapping": Mapping,
+        "Annotated": Annotated,
+        # Datetime utilities
+        "datetime": datetime,
+    }
+
+    # Merge into module namespace
+    module.__dict__.update(safe_globals)
+
+    # Execute the generated code safely
+    exec(code, module.__dict__)
+
+    # Retrieve the requested class
+    if not hasattr(module, class_name):
+        raise ValueError(f"Class '{class_name}' not found in generated code.")
+    cls = getattr(module, class_name)
+
+    # Basic sanity check
+    if not issubclass(cls, BaseModel):
+        raise TypeError(f"{class_name} is not a subclass of BaseModel")
+
+    return cls
