@@ -23,11 +23,11 @@ jobs:
         restore-keys: |
           uv-venv-${{ runner.os }}-
 
-    - name: Create virtualenv and install dependencies
+    - name: Install pre-commit tool with uv
       run: |
         uv tool install --with pre-commit-uv pre-commit
         
-    - name: Run pre-commit
+    - name: Setup pre-commit cache
       uses: actions/cache@v4
       with:
         path: ~/.cache/pre-commit
