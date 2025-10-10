@@ -1,8 +1,9 @@
 import asyncio
 import csv
+import io
 import json
+import os
 import random
-import time
 from collections.abc import Iterable
 from copy import copy, deepcopy
 from functools import partial, reduce
@@ -383,29 +384,88 @@ class AG(BaseModel, Generic[T]):
         atype: Type[BaseModel] = None,
         max_rows: int = None,
         task_description: str = None,
-    ) -> AG:
+    ):
         """
-        Import an object of type Agentics from a CSV file.
-        If atype is not provided it will be automatically inferred from the column names and
-        all attributes will be set as strings
+        Import an Agentics (AG) from CSV.
+
+        `csv_file` may be:
+        - str/Path to a file
+        - a text or binary stream (StringIO, BytesIO, file handle)
+        - a Streamlit UploadedFile
+        - a raw CSV string
+        If `atype` is not provided, it is inferred from the header with
+        `pydantic_model_from_csv` and all fields are optional strings.
         """
 
-        states: List = []
-        new_type = None
-        if atype:
-            logger.debug(
-                f"Importing Agentics of type {atype.__name__} from CSV {csv_file}"
-            )
+        def _to_text_stream(src) -> io.TextIOBase:
+            # 1) Path on disk
+            if isinstance(src, (str, os.PathLike)) and os.path.exists(src):
+                # use utf-8-sig to gracefully handle a BOM if present
+                return open(src, "r", encoding="utf-8-sig", newline="")
+
+            # 2) Raw CSV string (heuristic: contains a newline or a comma)
+            if isinstance(src, str) and ("\n" in src or "," in src):
+                return io.StringIO(src)
+
+            # 3) Streamlit UploadedFile (has getbuffer/getvalue)
+            if hasattr(src, "getbuffer"):
+                return io.StringIO(src.getbuffer().tobytes().decode("utf-8-sig"))
+            if hasattr(src, "getvalue"):
+                return io.StringIO(src.getvalue().decode("utf-8-sig"))
+
+            # 4) Already a text stream
+            if isinstance(src, io.TextIOBase):
+                try:
+                    src.seek(0)
+                except Exception:
+                    pass
+                return src
+
+            # 5) Binary stream -> wrap as text
+            if isinstance(src, (io.BytesIO, io.BufferedIOBase, io.RawIOBase)):
+                try:
+                    src.seek(0)
+                except Exception:
+                    pass
+                return io.TextIOWrapper(src, encoding="utf-8-sig", newline="")
+
+            raise TypeError(f"Unsupported CSV input type: {type(src).__name__}")
+
+        # Decide/Infer atype first (works with path/stream/string)
+        if atype is not None:
             new_type = atype
+            if "logger" in globals():
+                logger.debug(
+                    f"Importing Agentics of type {atype.__name__} from CSV {type(csv_file).__name__}"
+                )
         else:
+            # pydantic_model_from_csv already handles path/stream/string
             new_type = make_all_fields_optional(pydantic_model_from_csv(csv_file))
-        with open(csv_file, encoding="utf-8-sig") as f:
-            c_row = 0
-            for row in csv.DictReader(f):
-                if not max_rows or c_row < max_rows:
-                    state = new_type(**row)
-                    states.append(state)
-                c_row += 1
+
+        # Normalize to a text stream for DictReader
+        f = _to_text_stream(csv_file)
+        close_after = isinstance(csv_file, (str, os.PathLike)) and os.path.exists(
+            csv_file
+        )
+
+        try:
+            states: List[BaseModel] = []
+            reader = csv.DictReader(f)
+            if not reader.fieldnames:
+                raise ValueError("CSV appears to have no header row.")
+
+            for c_row, row in enumerate(reader):
+                if max_rows is not None and c_row >= max_rows:
+                    break
+                # Build the state using the inferred/provided Pydantic model
+                state = new_type(**row)
+                states.append(state)
+
+        finally:
+            # Only close if we opened a real file path
+            if close_after:
+                f.close()
+
         return cls(states=states, atype=new_type, task_description=task_description)
 
     @classmethod

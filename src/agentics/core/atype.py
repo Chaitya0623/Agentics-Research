@@ -130,15 +130,70 @@ def get_active_fields(state: BaseModel, allowed_fields: Set[str] = None) -> Set[
     return active_fields & allowed_fields if allowed_fields else active_fields
 
 
-def pydantic_model_from_csv(file_path: str) -> type[BaseModel]:
-    with open(file_path, newline="", encoding="utf-8") as csvfile:
-        reader = csv.DictReader(csvfile)
+import io
+import os
+from typing import IO
+
+
+def pydantic_model_from_csv(
+    file_source: Union[str, os.PathLike, IO[str], IO[bytes], object],
+) -> type[BaseModel]:
+    """
+    Generate a Pydantic model dynamically from a CSV header.
+
+    Accepts:
+      - A file path (str or Path)
+      - A binary or text stream (e.g., BytesIO, StringIO)
+      - A Streamlit UploadedFile
+      - A string containing raw CSV data
+    """
+
+    # Normalize source into a text stream
+    def _to_text_stream(src) -> IO[str]:
+        # --- Case 1: Path on disk ---
+        if isinstance(src, (str, os.PathLike)) and os.path.exists(src):
+            return open(src, "r", encoding="utf-8", newline="")
+
+        # --- Case 2: Raw string with CSV content ---
+        if isinstance(src, str) and "\n" in src:
+            return io.StringIO(src)
+
+        # --- Case 3: Streamlit UploadedFile or BytesIO ---
+        if hasattr(src, "getbuffer"):
+            return io.StringIO(src.getbuffer().tobytes().decode("utf-8"))
+        if hasattr(src, "getvalue"):
+            return io.StringIO(src.getvalue().decode("utf-8"))
+
+        # --- Case 4: Already text stream ---
+        if isinstance(src, io.TextIOBase):
+            src.seek(0)
+            return src
+
+        # --- Case 5: Binary stream ---
+        if isinstance(src, (io.BytesIO, io.BufferedIOBase, io.RawIOBase)):
+            src.seek(0)
+            return io.TextIOWrapper(src, encoding="utf-8", newline="")
+
+        raise TypeError(f"Unsupported input type: {type(src).__name__}")
+
+    f = _to_text_stream(file_source)
+    close_after = isinstance(file_source, (str, os.PathLike)) and os.path.exists(
+        file_source
+    )
+
+    try:
+        reader = csv.DictReader(f)
+        if not reader.fieldnames:
+            raise ValueError("CSV file appears to have no header row.")
+
         columns = [sanitize_field_name(x) for x in reader.fieldnames]
         model_name = "AType#" + ":".join(columns)
-        if not columns:
-            raise ValueError("CSV file appears to have no header.")
         fields = {col: (Optional[str], None) for col in columns}
+
         return create_model(model_name, **fields)
+    finally:
+        if close_after:
+            f.close()
 
 
 def infer_pydantic_type(dtype: Any, sample_values: pd.Series = None) -> Any:
