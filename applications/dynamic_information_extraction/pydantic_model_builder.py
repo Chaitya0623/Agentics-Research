@@ -1,6 +1,7 @@
 # app.py
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -10,9 +11,10 @@ import streamlit as st
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, ValidationError, create_model
 
+from agentics import AG
 from agentics.core.atype import (
     get_pydantic_fields,
-    import_pydantic_from_string,
+    import_pydantic_from_code,
     normalize_type_label,
 )
 
@@ -232,6 +234,18 @@ def pydantic_model_bulilder_ui():
         st.session_state.fields = []
     if "pydantic_class" not in st.session_state:
         st.session_state.pydantic_class = None
+    if "code" not in st.session_state:
+        st.session_state.code = None
+    if "type_description" not in st.session_state:
+        st.session_state.type_description = None
+    if "options" not in st.session_state:
+        st.session_state.options = [
+            f.split(".")[0]
+            for f in os.listdir(Path(__file__).resolve().parent / "predefined_types")
+            if f.endswith(".py") and not f.startswith("__")
+        ] + ["NA"]
+    if "selected_model" not in st.session_state:
+        st.session_state.selected_model = st.session_state.options[0]
 
     st.set_page_config(
         page_title="Pydantic Model Builder", page_icon="🧱", layout="wide"
@@ -240,22 +254,18 @@ def pydantic_model_bulilder_ui():
     # st.session_state.model_name = (st.session_state.new_model_name if st.session_state.new_model_name!="NA" else None) \
     #             or (st.session_state.selected_model.split(".")[0] if st.session_state.selected_model!="NA" else "GeneratedModel")
 
-    st.markdown("### 🧱 Visual Pydantic Model Builder" "")
     col1, col2 = st.columns([0.5, 0.5], gap="large")
     with col1:
         st.markdown("#### Select existing model")
-        options = [
-            f.split(".")[0]
-            for f in os.listdir(Path(__file__).resolve().parent / "predefined_types")
-            if f.endswith(".py") and not f.startswith("__")
-        ]
         st.session_state.selected_model = st.selectbox(
-            "Predefined Models", options=options
+            "Predefined Models",
+            options=st.session_state.options,
+            index=st.session_state.options.index(st.session_state.selected_model),
         )
-
-        load_model = st.button("Load Selected Model")
-        delete_model = st.button("Delete Selected Model")
-        new_model = st.button("Create New Model")
+        cola, colb, colc = st.columns(3)
+        load_model = cola.button("Load Selected Model")
+        delete_model = colb.button("Delete Selected Model")
+        new_model = colc.button("Create New Model")
 
         if new_model:
             st.session_state.selected_model = "NA"
@@ -273,7 +283,7 @@ def pydantic_model_bulilder_ui():
             ) as f:
                 st.session_state.code = f.read()
                 st.session_state.new_model_name = st.session_state.selected_model
-                st.session_state.pydantic_class = import_pydantic_from_string(
+                st.session_state.pydantic_class = import_pydantic_from_code(
                     st.session_state.code
                 )
                 st.session_state.fields = get_pydantic_fields(
@@ -293,10 +303,8 @@ def pydantic_model_bulilder_ui():
             st.success("Deleted model.")
             st.rerun()
 
-        st.markdown("#### Edit Type Fields")
-
         if len(st.session_state.fields) > 0:
-            st.markdown("### Fields")
+            st.markdown("#### Edit Fields")
             to_delete = []
 
             for i, fs in enumerate(st.session_state.fields):
@@ -403,107 +411,159 @@ def pydantic_model_bulilder_ui():
                     "Please select a predefined model to overwrite, or create a new one."
                 )
             else:
-                output_path = Path(
-                    "/Users/gliozzo/Code/agentics911/agentics/applications/macro_economic_impact/predefined_types"
-                ) / (st.session_state.new_model_name + ".py")
-                with open(output_path, "w") as f:
+                output_path = (
+                    Path(__file__).resolve().parent
+                    / "predefined_types"
+                    / (st.session_state.new_model_name + ".py")
+                )
+                with open(str(output_path), "w") as f:
                     f.write(
                         make_class_code(
                             st.session_state.fields,
                             model_name=st.session_state.new_model_name,
                         )
                     )
+                    st.session_state.selected_model = st.session_state.new_model_name
                 st.success(f"Saved model to predefined_types/{output_path.name}")
+                st.session_state.options.append(st.session_state.new_model_name)
+                st.rerun()
 
     with col2:
+        st.markdown("#### Edit from Natural Language")
+        with st.form("NL Type Description"):
+            st.session_state.type_description = st.text_area(
+                "Describe target type in your own words",
+                value=st.session_state.type_description,
+            )
+            generate_type_button = st.form_submit_button("Generate Type")
+
+        if generate_type_button:
+            st.session_state.pydantic_class = None
+            i = 0
+            while not st.session_state.pydantic_class and i < 5:
+                st.session_state.code, st.session_state.pydantic_class = asyncio.run(
+                    AG.generate_atype(st.session_state.type_description)
+                )
+                if not st.session_state.pydantic_class:
+                    i += 1
+                    col2.write(
+                        "Error, the generated code doesn't compile, trying again for {i} time"
+                    )
+                else:
+                    st.session_state.fields = get_pydantic_fields(
+                        st.session_state.pydantic_class
+                    )
+            st.rerun()
 
         tabs = st.tabs(
             ["🧾 Generated Class Code", "▶️ Preview & Validate", "🧩 JSON Schema"]
         )
 
-        if st.session_state.fields:
-
-            with tabs[0]:
-
-                st.code(st.session_state.code, language="python")
-                st.download_button(
-                    "⬇️ Download as .py",
-                    data=st.session_state.code,
-                    file_name=f"{st.session_state.selected_model}",
-                    mime="text/x-python",
+        if st.session_state.code:
+            st.session_state.pydantic_class = import_pydantic_from_code(
+                st.session_state.code
+            )
+            if st.session_state.pydantic_class:
+                st.session_state.fields = get_pydantic_fields(
+                    st.session_state.pydantic_class
                 )
 
-            with tabs[1]:
+                with tabs[0]:
 
-                colA, colB = st.columns(2)
-                with colA:
-                    st.markdown("**Enter sample JSON to validate**")
-                    sample = st.text_area(
-                        "JSON input",
-                        value=json.dumps(
-                            {f["name"]: None for f in st.session_state.fields}, indent=2
-                        ),
-                        height=220,
+                    st.code(st.session_state.code, language="python")
+                    cola, colb, colc = st.columns(3)
+                    cola.download_button(
+                        "⬇️ Download as .py",
+                        data=st.session_state.code,
+                        file_name=f"{st.session_state.selected_model}",
+                        mime="text/x-python",
                     )
-                    if st.button("Validate JSON"):
-                        try:
-                            data = json.loads(sample)
-                            obj = st.session_state.pydantic_class.model_validate(data)
-                            st.success("Validation succeeded.")
-                            st.json(obj.model_dump())
-                        except (json.JSONDecodeError, ValidationError, Exception) as e:
-                            st.error(f"Validation failed:\n\n{e}")
+                    use_type = colb.button("Use Type")
+                if use_type:
+                    st.session_state.code, st.session_state.pydantic_class = (
+                        asyncio.run(AG.generate_atype(st.session_state.code))
+                    )
+                    st.rerun()
+                with tabs[1]:
 
-                with colB:
-                    st.markdown("**Create an instance with a small form**")
-                    form_vals = {}
-                    for f in st.session_state.fields:
-                        label = f["name"]
-                        t = parse_field_type(f["type_label"])
-                        if t is bool:
-                            form_vals[label] = st.checkbox(label, value=False)
-                        else:
-                            form_vals[label] = st.text_input(label, "")
-                    if st.button("Build instance from form"):
-                        # naive casting: try int/float/bool; leave strings otherwise
-                        casted = {}
+                    colA, colB = st.columns(2)
+                    with colA:
+                        st.markdown("**Enter sample JSON to validate**")
+                        sample = st.text_area(
+                            "JSON input",
+                            value=json.dumps(
+                                {f["name"]: None for f in st.session_state.fields},
+                                indent=2,
+                            ),
+                            height=220,
+                        )
+                        if st.button("Validate JSON"):
+                            try:
+                                data = json.loads(sample)
+                                obj = st.session_state.pydantic_class.model_validate(
+                                    data
+                                )
+                                st.success("Validation succeeded.")
+                                st.json(obj.model_dump())
+                            except (
+                                json.JSONDecodeError,
+                                ValidationError,
+                                Exception,
+                            ) as e:
+                                st.error(f"Validation failed:\n\n{e}")
+
+                    with colB:
+                        st.markdown("**Create an instance with a small form**")
+                        form_vals = {}
                         for f in st.session_state.fields:
-                            name = f["name"]
-                            val = form_vals[name]
+                            label = f["name"]
                             t = parse_field_type(f["type_label"])
-                            if val == "":
-                                casted[name] = None
+                            if t is bool:
+                                form_vals[label] = st.checkbox(label, value=False)
                             else:
-                                if t is int:
-                                    try:
-                                        casted[name] = int(val)
-                                    except:
-                                        casted[name] = val
-                                elif t is float:
-                                    try:
-                                        casted[name] = float(val)
-                                    except:
-                                        casted[name] = val
-                                elif t is bool:
-                                    casted[name] = str(val).strip().lower() in (
-                                        "1",
-                                        "true",
-                                        "yes",
-                                        "y",
-                                        "on",
-                                    )
+                                form_vals[label] = st.text_input(label, "")
+                        if st.button("Build instance from form"):
+                            # naive casting: try int/float/bool; leave strings otherwise
+                            casted = {}
+                            for f in st.session_state.fields:
+                                name = f["name"]
+                                val = form_vals[name]
+                                t = parse_field_type(f["type_label"])
+                                if val == "":
+                                    casted[name] = None
                                 else:
-                                    casted[name] = val
-                        try:
-                            obj = st.session_state.pydantic_class.model_validate(casted)
-                            st.success("Instance created:")
-                            st.json(obj.model_dump())
-                        except ValidationError as e:
-                            st.error(str(e))
+                                    if t is int:
+                                        try:
+                                            casted[name] = int(val)
+                                        except:
+                                            casted[name] = val
+                                    elif t is float:
+                                        try:
+                                            casted[name] = float(val)
+                                        except:
+                                            casted[name] = val
+                                    elif t is bool:
+                                        casted[name] = str(val).strip().lower() in (
+                                            "1",
+                                            "true",
+                                            "yes",
+                                            "y",
+                                            "on",
+                                        )
+                                    else:
+                                        casted[name] = val
+                            try:
+                                obj = st.session_state.pydantic_class.model_validate(
+                                    casted
+                                )
+                                st.success("Instance created:")
+                                st.json(obj.model_dump())
+                            except ValidationError as e:
+                                st.error(str(e))
 
-            with tabs[2]:
-                st.session_state.pydantic_class = build_model(
-                    st.session_state.selected_model.split(".")[0],
-                    st.session_state.fields,
-                )
-                st.json(st.session_state.pydantic_class.model_json_schema())
+                with tabs[2]:
+                    st.session_state.pydantic_class = build_model(
+                        st.session_state.selected_model.split(".")[0],
+                        st.session_state.fields,
+                    )
+                    st.json(st.session_state.pydantic_class.model_json_schema())

@@ -6,10 +6,27 @@ import asyncio
 import datetime
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from agentics import AG
 from agentics.core.atype import pydantic_to_markdown
+
+
+class Answer(BaseModel):
+    short_answer: str | None = None
+    answer_report: str | None = Field(
+        None,
+        description="""
+A detailed Markdown Document reporting evidence for the above answer
+""",
+    )
+    evidence: list[str] | None = Field(
+        None,
+        description="""
+list of evidence sources used to support the answer
+""",
+    )
+    confidence: float | None = None
 
 
 def data_processing():
@@ -43,6 +60,8 @@ def data_processing():
         st.markdown(f"Selected Model: **{st.session_state.selected_model}**")
         with st.form("Selection"):
 
+            question = st.text_area("Define the subject of your analysis")
+
             selected_start = st.number_input(
                 "First State Analyzed", min_value=start, max_value=end, value=1
             )
@@ -62,6 +81,10 @@ def data_processing():
 
     if market_sentiment_analysis:
         # print (st.session_state.pydantic_class)
+        if question:
+            st.session_state.code, st.session_state.pydantic_class = asyncio.run(
+                AG.generate_atype(question)
+            )
 
         with st.spinner(f"Performing {st.session_state.selected_model} ..."):
             start_index = selected_start
@@ -79,6 +102,11 @@ def data_processing():
                     )
                 )
             )
+            sentiment.states += sentiment.areduce_batches
+            sentiment = sentiment.add_attribute("question", default_value=question)
+            answer = asyncio.run(
+                AG(atype=Answer, transduction_type="areduce") << sentiment
+            )
             import yaml
 
             col2.markdown(f"### Analysis from {selected_start} to {selected_end}")
@@ -86,6 +114,9 @@ def data_processing():
                 yaml.dump(
                     sentiment[0].model_dump(), sort_keys=False, allow_unicode=True
                 )
+            )
+            col1.text(
+                yaml.dump(answer[0].model_dump(), sort_keys=False, allow_unicode=True)
             )
 
             col2.markdown("""### Intermediate Batches Analysis""")

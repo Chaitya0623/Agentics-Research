@@ -28,26 +28,6 @@ class AGString(BaseModel):
 ####### Utils #######################
 
 
-def pretty_print_atype(atype, indent: int = 2):
-    """
-    Recursively pretty print an 'atype' (Agentics/Pydantic typing model).
-    Works on generics like list[int], dict[str, float], Optional[...], etc.
-    """
-    prefix = " " * indent
-
-    origin = get_origin(atype)
-    args = get_args(atype)
-
-    if origin is None:
-        # Base case: a plain class/type
-        print(f"{prefix}{atype}")
-    else:
-        print(f"{prefix}{origin.__name__}[")
-        for arg in args:
-            pretty_print_atype(arg, indent + 2)
-        print(f"{prefix}]")
-
-
 def copy_attribute_values(
     state: BaseModel, source_attribute: str, target_attribute: str
 ) -> BaseModel:
@@ -122,7 +102,7 @@ def get_pydantic_fields(atype: Type[BaseModel]):
 
 def get_active_fields(state: BaseModel, allowed_fields: Set[str] = None) -> Set[str]:
     """
-    Returns the set of fields in `state` that are None and optionally intersect with allowed_fields.
+    Returns the set of fields in `state` that are not None and optionally intersect with allowed_fields.
     """
     active_fields = {
         k for k, v in state.model_dump().items() if v is not None and v != ""
@@ -389,7 +369,7 @@ from typing import (
 from pydantic import BaseModel, Field
 
 
-def import_pydantic_from_string(code: str):
+def import_pydantic_from_code(code: str):
     """
     Dynamically execute Pydantic class code and return the first
     Pydantic BaseModel subclass defined in it.
@@ -424,22 +404,28 @@ def import_pydantic_from_string(code: str):
     }
 
     module.__dict__.update(safe_globals)
+    try:
+        # Execute the generated code
+        exec(code, module.__dict__)
 
-    # Execute the generated code
-    exec(code, module.__dict__)
+        # Automatically find the first Pydantic model class
+        classes = [
+            obj
+            for obj in module.__dict__.values()
+            if isinstance(obj, type)
+            and issubclass(obj, BaseModel)
+            and obj is not BaseModel
+        ]
 
-    # Automatically find the first Pydantic model class
-    classes = [
-        obj
-        for obj in module.__dict__.values()
-        if isinstance(obj, type) and issubclass(obj, BaseModel) and obj is not BaseModel
-    ]
+        if not classes:
+            raise ValueError(
+                "No Pydantic BaseModel subclass found in the provided code."
+            )
 
-    if not classes:
-        raise ValueError("No Pydantic BaseModel subclass found in the provided code.")
-
-    # Return the first detected model class
-    return classes[-1]
+        # Return the first detected model class
+        return classes[-1]
+    except:
+        return None
 
 
 def normalize_type_label(label: str | None) -> tuple[str, bool]:

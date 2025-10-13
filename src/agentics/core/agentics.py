@@ -38,6 +38,8 @@ from agentics.core.async_executor import (
 from agentics.core.atype import (
     copy_attribute_values,
     get_active_fields,
+    get_pydantic_fields,
+    import_pydantic_from_code,
     make_all_fields_optional,
     pydantic_model_from_csv,
     pydantic_model_from_dataframe,
@@ -176,6 +178,37 @@ class AG(BaseModel, Generic[T]):
     @staticmethod
     def create_crewai_llm(**kwargs):
         return LLM(**kwargs)
+
+    @classmethod
+    async def generate_atype(
+        cls, description: str
+    ) -> Tuple[str, Type[BaseModel]] | None:
+
+        class GeneratedAtype(BaseModel):
+            python_code: Optional[str] = Field(
+                None, description="Python Code for the described Pydantic type"
+            )
+            methods: list[str] = Field(None, description="Methods for the class above")
+
+        generated_atype_ag = await (
+            AG(
+                atype=GeneratedAtype,
+                instructions="""Generate python code for the input nl type specs. 
+            Make all fields Optional. Use only primitive types for the fields, avoiding nested. 
+            Provide descriptions for the class and all its fields, using Field(None,description= "...")
+            If the input nl type spec is a question, generate a pydantic type that can be used to 
+            represent the answer to that question.
+            """,
+            )
+            << description
+        )
+        if len(generated_atype_ag.states) > 0 and generated_atype_ag[0].python_code:
+
+            gen_type = import_pydantic_from_code(generated_atype_ag[0].python_code)
+            return generated_atype_ag[0].python_code, gen_type
+
+        else:
+            return None
 
     @classmethod
     def get_llm_provider(
@@ -803,14 +836,27 @@ class AG(BaseModel, Generic[T]):
 
     async def self_transduction(
         self,
-        source_fields: List[str],
-        target_fields: List[str],
+        source_fields: List[str] | None = None,
+        target_fields: List[str] | None = None,
         instructions: str = None,
     ):
         target = self.clone()
-        self.transduce_fields = source_fields
+        # if not source_fields and not target_fields:
+        #     return await self.amap(self._single_self_transduction)
+
+        if not source_fields:
+            self.transduce_fields = get_active_fields(self[0])
+        else:
+            self.transduce_fields = source_fields
+
         target.instructions = instructions or target.instructions
-        target.transduce_fields = target_fields
+        if not target_fields:
+            target.transduce_fields = list(
+                {x["name"] for x in get_pydantic_fields(self.atype)}
+                - get_active_fields(self[0])
+            )
+        else:
+            target.transduce_fields = target_fields
 
         output_process = target << self
         output = await output_process

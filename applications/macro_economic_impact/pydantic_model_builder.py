@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field, ValidationError, create_model
 
 from agentics.core.atype import (
     get_pydantic_fields,
-    import_pydantic_from_string,
+    import_pydantic_from_code,
     normalize_type_label,
 )
 
@@ -273,7 +273,7 @@ def pydantic_model_bulilder_ui():
             ) as f:
                 st.session_state.code = f.read()
                 st.session_state.new_model_name = st.session_state.selected_model
-                st.session_state.pydantic_class = import_pydantic_from_string(
+                st.session_state.pydantic_class = import_pydantic_from_code(
                     st.session_state.code
                 )
                 st.session_state.fields = get_pydantic_fields(
