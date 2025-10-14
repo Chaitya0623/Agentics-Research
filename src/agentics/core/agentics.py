@@ -348,7 +348,7 @@ class AG(BaseModel, Generic[T]):
         hints = get_type_hints(func)
         if "state" in hints and not issubclass(hints["state"], self.atype):
             raise AmapError(
-                f"The input type {hints["state"]} of the provided function is not a subclass of the required atype {self.atype}"
+                f"The input type {hints['state']} of the provided function is not a subclass of the required atype {self.atype}"
             )
         if "return" in hints and issubclass(hints["return"], BaseModel):
             self.atype = hints["return"]
