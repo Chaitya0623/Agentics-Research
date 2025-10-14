@@ -1,8 +1,9 @@
 import asyncio
 import csv
+import io
 import json
+import os
 import random
-import time
 from collections.abc import Iterable
 from copy import copy, deepcopy
 from functools import partial, reduce
@@ -18,6 +19,7 @@ from typing import (
     Type,
     TypeVar,
     Union,
+    get_type_hints,
 )
 
 import pandas as pd
@@ -36,18 +38,22 @@ from agentics.core.async_executor import (
 from agentics.core.atype import (
     copy_attribute_values,
     get_active_fields,
+    get_pydantic_fields,
+    import_pydantic_from_code,
     make_all_fields_optional,
     pydantic_model_from_csv,
     pydantic_model_from_dataframe,
     pydantic_model_from_dict,
     pydantic_model_from_jsonl,
 )
-from agentics.core.errors import InvalidStateError
+from agentics.core.errors import AmapError, InvalidStateError
 from agentics.core.llm_connections import available_llms, get_llm_provider
 from agentics.core.mapping import AttributeMapping, ATypeMapping
 from agentics.core.utils import (
+    chunk_list,
     clean_for_json,
     is_str_or_list_of_str,
+    make_states_list_model,
     remap_dict_keys,
     sanitize_dict_keys,
 )
@@ -74,38 +80,38 @@ class AG(BaseModel, Generic[T]):
         None,
         description="""this is the type in common among all element of the list""",
     )
-    crew_prompt_params: Optional[Dict[str, str]] = Field(
-        {
-            "role": "Task Executor",
-            "goal": "You execute tasks",
-            "backstory": "You are always faithful and provide only fact based answers.",
-            "expected_output": "Described by Pydantic Type",
-        },
-        description="prompt parameter for initializing Crew and Task",
-    )
-    instructions: Optional[str] = Field(
-        """Generate an object of the specified type from the following input.""",
-        description="Special instructions to be given to the agent for executing transduction",
-    )
-    llm: Any = Field(default_factory=get_llm_provider, exclude=True)
-    max_iter: int = Field(
-        3,
-        description="Max number of iterations for the agent to provide a final transduction when using tools.",
-    )
-    prompt_template: Optional[str] = Field(
+    atype_code: Type[BaseModel] = Field(
         None,
-        description="Langchain style prompt pattern to be used when provided as an input for a transduction.  Refer to https://python.langchain.com/docs/concepts/prompt_templates/ ",
-    )
-    reasoning: Optional[bool] = None
-    skip_intentional_definition: bool = Field(
-        False,
-        description="if True, don't compose intentional instruction for Crew Task",
+        description="""Python code for the used type""",
     )
     states: List[BaseModel] = []
     tools: Optional[List[Any]] = Field(None, exclude=True)
     transduce_fields: Optional[List[str]] = Field(
         None,
         description="""this is the list of field that will be used for the transduction, both incoming and outcoming""",
+    )
+    instructions: Optional[str] = Field(
+        """Generate an object of the specified type from the following input.""",
+        description="Special instructions to be given to the agent for executing transduction",
+    )
+    transduction_type: Optional[str] = Field(
+        "amap",
+        description="Type of transduction to be used, amap, areduce",
+    )
+    llm: Any = Field(default_factory=get_llm_provider, exclude=True)
+
+    prompt_template: Optional[str] = Field(
+        None,
+        description="Langchain style prompt pattern to be used when provided as an input for a transduction.  Refer to https://python.langchain.com/docs/concepts/prompt_templates/ ",
+    )
+    reasoning: Optional[bool] = None
+    max_iter: int = Field(
+        3,
+        description="Max number of iterations for the agent to provide a final transduction when using tools.",
+    )
+    skip_intentional_definition: bool = Field(
+        False,
+        description="if True, don't compose intentional instruction for Crew Task",
     )
     transient_pbar: bool = False
     transduction_logs_path: Optional[str] = Field(
@@ -115,6 +121,21 @@ class AG(BaseModel, Generic[T]):
     transduction_timeout: float | None = None
     verbose_transduction: bool = True
     verbose_agent: bool = False
+    areduce_batch_size: int = Field(
+        10,
+        description="The size of the bathes to be used when transduction type is areduce",
+    )
+    areduce_batches: List[BaseModel] = []
+
+    crew_prompt_params: Optional[Dict[str, str]] = Field(
+        {
+            "role": "Task Executor",
+            "goal": "You execute tasks",
+            "backstory": "You are always faithful and provide only fact based answers.",
+            "expected_output": "Described by Pydantic Type",
+        },
+        description="prompt parameter for initializing Crew and Task",
+    )
 
     class Config:
         model_config = {"arbitrary_types_allowed": True}
@@ -147,8 +168,9 @@ class AG(BaseModel, Generic[T]):
         return copy_instance
 
     def filter_states(self, start: int = None, end: int = None) -> AG:
-        self.states = self.states[start:end]
-        return self
+        new_self = self.clone()
+        new_self.states = self.states[start:end]
+        return new_self
 
     def get_random_sample(self, percent: float) -> AG:
         """An AG is returned with randomly selected states, given the percentage of samples to return."""
@@ -167,6 +189,43 @@ class AG(BaseModel, Generic[T]):
     @staticmethod
     def create_crewai_llm(**kwargs):
         return LLM(**kwargs)
+
+    async def generate_atype(
+        self, description: str, retry: int = 3
+    ) -> Tuple[str, Type[BaseModel]] | None:
+
+        class GeneratedAtype(BaseModel):
+            python_code: Optional[str] = Field(
+                None, description="Python Code for the described Pydantic type"
+            )
+            methods: list[str] = Field(None, description="Methods for the class above")
+
+        i = 0
+        while i < retry:
+
+            generated_atype_ag = await (
+                AG(
+                    atype=GeneratedAtype,
+                    instructions="""Generate python code for the input nl type specs. 
+                Make all fields Optional. Use only primitive types for the fields, avoiding nested. 
+                Provide descriptions for the class and all its fields, using Field(None,description= "...")
+                If the input nl type spec is a question, generate a pydantic type that can be used to 
+                represent the answer to that question.
+                """,
+                )
+                << description
+            )
+            if len(generated_atype_ag.states) > 0 and generated_atype_ag[0].python_code:
+                gen_type = import_pydantic_from_code(generated_atype_ag[0].python_code)
+                if gen_type:
+                    self.atype = gen_type
+                    self.atype_code = generated_atype_ag[0].python_code
+                    return self
+                else:
+                    i += 1
+            else:
+                i += 1
+        return self
 
     @classmethod
     def get_llm_provider(
@@ -205,6 +264,80 @@ class AG(BaseModel, Generic[T]):
         self.states.append(state)
 
     ######################################
+    ##### Validation Functionalities #####
+    ######################################
+
+    def validate(
+        self, coerce: bool = False, return_error=False
+    ) -> Union[bool, tuple[bool, list[str]]]:
+        """
+        Validate that all states in an Agentics object match its declared type.
+
+        Args:
+            ag: An Agentics AG instance with attributes:
+                - atype: a Pydantic model class
+                - states: a list of instances or dicts representing states
+            coerce: If True, converts dicts or mismatched BaseModels into ag.atype instances.
+
+        Returns:
+            (ok, problems)
+            ok: True if all states are valid (after optional coercion)
+            problems: list of string messages describing validation errors
+        """
+        problems: list[str] = []
+
+        # --- Structural sanity check ---
+        if not hasattr(self, "atype") or not hasattr(self, "states"):
+            raise TypeError(
+                "Expected an Agentics object with `.atype` and `.states` attributes"
+            )
+
+        atype = self.atype
+        if not isinstance(atype, type) or not issubclass(atype, BaseModel):
+            raise TypeError("ag.atype must be a subclass of pydantic.BaseModel")
+
+        # --- Validation loop ---
+        for i, state in enumerate(self.states):
+            try:
+                # Case 1: already correct Pydantic model
+                if isinstance(state, atype):
+                    continue
+
+                # Case 2: Coercion requested
+                if coerce:
+                    if isinstance(state, dict):
+                        self.states[i] = atype.model_validate(state)
+                    elif isinstance(state, BaseModel):
+                        self.states[i] = atype.model_validate(state.model_dump())
+                    else:
+                        raise TypeError(
+                            f"Unsupported state type: {type(state).__name__}"
+                        )
+                else:
+                    # Validate only (without changing list)
+                    if isinstance(state, dict):
+                        atype.model_validate(state)
+                    elif isinstance(state, BaseModel):
+                        atype.model_validate(state.model_dump())
+                    else:
+                        raise TypeError(
+                            f"Unsupported state type: {type(state).__name__}"
+                        )
+
+            except (ValidationError, TypeError) as e:
+                problems.append(f"State {i}: invalid type or data — {e}")
+        if return_error:
+            if len(problems) == 0:
+                return True, []
+            else:
+                return False, problems
+        else:
+            if len(problems) == 0:
+                return True
+            else:
+                return False
+
+    ######################################
     ##### aMapReduce Functionalities #####
     ######################################
 
@@ -212,6 +345,13 @@ class AG(BaseModel, Generic[T]):
         """Asynchronous map with exception-safe job gathering"""
 
         mapper = aMap(func=func, timeout=timeout)
+        hints = get_type_hints(func)
+        if "state" in hints and not issubclass(hints["state"], self.atype):
+            raise AmapError(
+                f"The input type {hints['state']} of the provided function is not a subclass of the required atype {self.atype}"
+            )
+        if "return" in hints and issubclass(hints["return"], BaseModel):
+            self.atype = hints["return"]
         try:
             results = await mapper.execute(
                 *self.states, description=f"Executing amap on {func.__name__}"
@@ -294,29 +434,88 @@ class AG(BaseModel, Generic[T]):
         atype: Type[BaseModel] = None,
         max_rows: int = None,
         task_description: str = None,
-    ) -> AG:
+    ):
         """
-        Import an object of type Agentics from a CSV file.
-        If atype is not provided it will be automatically inferred from the column names and
-        all attributes will be set as strings
+        Import an Agentics (AG) from CSV.
+
+        `csv_file` may be:
+        - str/Path to a file
+        - a text or binary stream (StringIO, BytesIO, file handle)
+        - a Streamlit UploadedFile
+        - a raw CSV string
+        If `atype` is not provided, it is inferred from the header with
+        `pydantic_model_from_csv` and all fields are optional strings.
         """
 
-        states: List = []
-        new_type = None
-        if atype:
-            logger.debug(
-                f"Importing Agentics of type {atype.__name__} from CSV {csv_file}"
-            )
+        def _to_text_stream(src) -> io.TextIOBase:
+            # 1) Path on disk
+            if isinstance(src, (str, os.PathLike)) and os.path.exists(src):
+                # use utf-8-sig to gracefully handle a BOM if present
+                return open(src, "r", encoding="utf-8-sig", newline="")
+
+            # 2) Raw CSV string (heuristic: contains a newline or a comma)
+            if isinstance(src, str) and ("\n" in src or "," in src):
+                return io.StringIO(src)
+
+            # 3) Streamlit UploadedFile (has getbuffer/getvalue)
+            if hasattr(src, "getbuffer"):
+                return io.StringIO(src.getbuffer().tobytes().decode("utf-8-sig"))
+            if hasattr(src, "getvalue"):
+                return io.StringIO(src.getvalue().decode("utf-8-sig"))
+
+            # 4) Already a text stream
+            if isinstance(src, io.TextIOBase):
+                try:
+                    src.seek(0)
+                except Exception:
+                    pass
+                return src
+
+            # 5) Binary stream -> wrap as text
+            if isinstance(src, (io.BytesIO, io.BufferedIOBase, io.RawIOBase)):
+                try:
+                    src.seek(0)
+                except Exception:
+                    pass
+                return io.TextIOWrapper(src, encoding="utf-8-sig", newline="")
+
+            raise TypeError(f"Unsupported CSV input type: {type(src).__name__}")
+
+        # Decide/Infer atype first (works with path/stream/string)
+        if atype is not None:
             new_type = atype
+            if "logger" in globals():
+                logger.debug(
+                    f"Importing Agentics of type {atype.__name__} from CSV {type(csv_file).__name__}"
+                )
         else:
+            # pydantic_model_from_csv already handles path/stream/string
             new_type = make_all_fields_optional(pydantic_model_from_csv(csv_file))
-        with open(csv_file, encoding="utf-8-sig") as f:
-            c_row = 0
-            for row in csv.DictReader(f):
-                if not max_rows or c_row < max_rows:
-                    state = new_type(**row)
-                    states.append(state)
-                c_row += 1
+
+        # Normalize to a text stream for DictReader
+        f = _to_text_stream(csv_file)
+        close_after = isinstance(csv_file, (str, os.PathLike)) and os.path.exists(
+            csv_file
+        )
+
+        try:
+            states: List[BaseModel] = []
+            reader = csv.DictReader(f)
+            if not reader.fieldnames:
+                raise ValueError("CSV appears to have no header row.")
+
+            for c_row, row in enumerate(reader):
+                if max_rows is not None and c_row >= max_rows:
+                    break
+                # Build the state using the inferred/provided Pydantic model
+                state = new_type(**row)
+                states.append(state)
+
+        finally:
+            # Only close if we opened a real file path
+            if close_after:
+                f.close()
+
         return cls(states=states, atype=new_type, task_description=task_description)
 
     @classmethod
@@ -454,9 +653,27 @@ class AG(BaseModel, Generic[T]):
             return self.llm.call(other)
 
         if not self.atype and is_str_or_list_of_str(other):
-            input_messages = AG(states=[AGString(string=x) for x in other])
-            input_messages = await input_messages.amap(llm_call)
-            return [x.string for x in input_messages.states]
+            if self.transduction_type == "amap":
+                input_messages = AG(states=[AGString(string=x) for x in other])
+                input_messages = await input_messages.amap(llm_call)
+                return [x.string for x in input_messages.states]
+
+        if self.transduction_type == "areduce":
+            if is_str_or_list_of_str(other):
+                chunks = chunk_list(other, chunk_size=self.areduce_batch_size)
+            else:
+                chunks = chunk_list(other.states, chunk_size=self.areduce_batch_size)
+            if len(chunks) == 1:
+                self.transduction_type = "amap"
+                self = await (self << str(chunks[0]))
+                self.transduction_type = "areduce"
+                return self
+            else:
+                self.transduction_type = "amap"
+                reduced_chunks = await (self << [str(x) for x in chunks])
+                self.transduction_type = "areduce"
+                self.areduce_batches += reduced_chunks.states
+                return await (self << reduced_chunks)
 
         output = self.clone()
         output.states = []
@@ -563,8 +780,8 @@ class AG(BaseModel, Generic[T]):
             )
             transduced_results = await pt.execute(
                 *input_prompts,
-                description=f"Transducing {self.__name__} << {"AG[str]" if not isinstance(other, AG) else other.__name__}",
-                transient_pbar=self.transient_pbar
+                description=f"Transducing {self.__name__} << {'AG[str]' if not isinstance(other, AG) else other.__name__}",
+                transient_pbar=self.transient_pbar,
             )
         except Exception as e:
             transduced_results = self.states
@@ -636,14 +853,27 @@ class AG(BaseModel, Generic[T]):
 
     async def self_transduction(
         self,
-        source_fields: List[str],
-        target_fields: List[str],
+        source_fields: List[str] | None = None,
+        target_fields: List[str] | None = None,
         instructions: str = None,
     ):
         target = self.clone()
-        self.transduce_fields = source_fields
+        # if not source_fields and not target_fields:
+        #     return await self.amap(self._single_self_transduction)
+
+        if not source_fields:
+            self.transduce_fields = get_active_fields(self[0])
+        else:
+            self.transduce_fields = source_fields
+
         target.instructions = instructions or target.instructions
-        target.transduce_fields = target_fields
+        if not target_fields:
+            target.transduce_fields = list(
+                {x["name"] for x in get_pydantic_fields(self.atype)}
+                - get_active_fields(self[0])
+            )
+        else:
+            target.transduce_fields = target_fields
 
         output_process = target << self
         output = await output_process

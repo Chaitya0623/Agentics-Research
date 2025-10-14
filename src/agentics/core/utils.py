@@ -11,6 +11,8 @@ from typing import (
     List,
     Optional,
     Sequence,
+    Type,
+    TypeVar,
     Union,
     get_origin,
 )
@@ -19,6 +21,7 @@ import httpx
 import pandas as pd
 from dotenv import load_dotenv
 from loguru import logger
+from numerize.numerize import numerize
 from openai import APIStatusError, AsyncOpenAI
 from pydantic import BaseModel, Field, create_model
 from rich.progress import (
@@ -33,7 +36,8 @@ from rich.progress import (
     TimeElapsedColumn,
     TimeRemainingColumn,
 )
-from numerize.numerize import numerize
+
+A = TypeVar("A", bound=BaseModel)
 
 load_dotenv()
 
@@ -320,4 +324,19 @@ class TransductionSpeed(ProgressColumn):
         speed = task.finished_speed or task.speed
         if speed is None:
             return Text("? states/s", style="progress.data.speed")
-        return Text(f"{numerize(speed, 2)} states/s", style="progress.data.speed")
+        return Text(f"{speed:.3f} states/s", style="progress.data.speed")
+
+
+def make_states_list_model(item_type: Type[A]) -> Type[BaseModel]:
+    """
+    Dynamically create a Pydantic model:
+
+        class ATypeList(BaseModel):
+            states: List[item_type] = []
+
+    but with proper validation and default_factory.
+    """
+    # Name is optional; Pydantic will auto-unique if reused.
+    return create_model(
+        "ATypeList", states=(List[item_type], Field(default_factory=list))
+    )

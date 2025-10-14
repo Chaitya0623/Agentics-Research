@@ -5,9 +5,7 @@ import streamlit as st
 from pydantic import BaseModel
 
 from agentics import AG
-
 from agentics.core.atype import create_pydantic_model, get_pydantic_fields
-
 
 # st.set_page_config(
 #     page_title="Agentics",
@@ -46,8 +44,9 @@ with st.sidebar.popover("Type Mapping"):
     )
 with st.sidebar:
     st.subheader("AType")
-    
+
     type_model = st.data_editor(
+        ## TODO:  get_pydantic_fields debug
         get_pydantic_fields(st.session_state.ag.atype),
         num_rows="dynamic",
         use_container_width=True,
@@ -154,15 +153,16 @@ if perform_transduction:
         # st.session_state.ag.memory_collection = (
         #     selected_memory if selected_memory != "NONE" else None
         # )
-        
+
         st.session_state.transduced = asyncio.run(
-            st.session_state.ag.self_transduction(source_fields, target_fields))
-        #st.write(st.session_state.transduced)
+            st.session_state.ag.self_transduction(source_fields, target_fields)
+        )
+        # st.write(st.session_state.transduced)
 
         st.session_state.output_data_editor = st.dataframe(
             st.session_state.transduced.to_dataframe()
         )
-        #st.rerun()
+        # st.rerun()
 if update_output_states:
     st.session_state.ag = st.session_state.transduced
     st.session_state.input_data_editor = st.session_state.output_data_editor

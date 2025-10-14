@@ -4,6 +4,10 @@ class AgenticsError(Exception):
     pass
 
 
+class AmapError(AgenticsError):
+    pass
+
+
 class InvalidStateError(AgenticsError):
     pass
 
