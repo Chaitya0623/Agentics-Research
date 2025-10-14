@@ -1,6 +1,6 @@
+import json
 import os
 from pathlib import Path
-import json
 
 
 def get_data_from_jsonl(jsonl_file):
@@ -11,7 +11,7 @@ def get_data_from_jsonl(jsonl_file):
     return ret_dicts
 
 
-def dump_data_to_jsonl(list_of_dicts, jsonl_file, mode='w'):
+def dump_data_to_jsonl(list_of_dicts, jsonl_file, mode="w"):
     with open(jsonl_file, mode) as fp:
         for each_data in list_of_dicts:
             fp.write(json.dumps(each_data) + "\n")
@@ -34,14 +34,16 @@ def preprocess_schema_file(input_schema_file, output_schema_file):
                     "relation_name": table_id,
                     "relation_description": table_desc,
                     "attribute_name": column_name,
-                    "attribute_description": column_desc
+                    "attribute_description": column_desc,
                 }
             )
             cnt += 1
     dump_data_to_jsonl(column_schema, output_schema_file)
 
 
-def preprocess_ground_truth(input_ground_truth, output_ground_truth, mimic_attribute_file, omop_attribute_file):
+def preprocess_ground_truth(
+    input_ground_truth, output_ground_truth, mimic_attribute_file, omop_attribute_file
+):
     column_mapping = get_data_from_jsonl(input_ground_truth)
     mimic_attributes = get_data_from_jsonl(mimic_attribute_file)
     omop_attributes = get_data_from_jsonl(omop_attribute_file)
@@ -49,30 +51,44 @@ def preprocess_ground_truth(input_ground_truth, output_ground_truth, mimic_attri
     id_mapping_from_mimic_to_omop = []
     for each_column_map in column_mapping:
         for mimic_col in mimic_attributes:
-            if mimic_col["relation_name"].lower() == each_column_map["mimic"]["table_id"].lower():
-                if mimic_col["attribute_name"].lower() == each_column_map["mimic"]["column_name"].lower():
+            if (
+                mimic_col["relation_name"].lower()
+                == each_column_map["mimic"]["table_id"].lower()
+            ):
+                if (
+                    mimic_col["attribute_name"].lower()
+                    == each_column_map["mimic"]["column_name"].lower()
+                ):
                     mimic_id = mimic_col["id"]
-                    
+
                     for omop_col in omop_attributes:
-                        if omop_col["relation_name"].lower() == each_column_map["omop"]["table_id"].lower():
-                            if omop_col["attribute_name"].lower() == each_column_map["omop"]["column_name"].lower():
+                        if (
+                            omop_col["relation_name"].lower()
+                            == each_column_map["omop"]["table_id"].lower()
+                        ):
+                            if (
+                                omop_col["attribute_name"].lower()
+                                == each_column_map["omop"]["column_name"].lower()
+                            ):
                                 omop_id = omop_col["id"]
-                                id_mapping_from_mimic_to_omop.append({"mimic_id": mimic_id, "omop_id": omop_id})
+                                id_mapping_from_mimic_to_omop.append(
+                                    {"mimic_id": mimic_id, "omop_id": omop_id}
+                                )
                                 break
     dump_data_to_jsonl(id_mapping_from_mimic_to_omop, output_ground_truth)
 
 
 def dataset_split(split_name):
     split_name_to_relation_names = {
-        "AdCO": ("admissions", "condition_occurrence"), 
-        "AdVD": ("admissions", "visit_detail"), 
-        "AdVO": ("admissions", "visit_occurrence"), 
-        "DiCO": ("diagnoses_icd", "condition_occurrence"), 
-        "LaMe": ("labevents", "measurement"), 
-        "PaPe": ("patients", "person"), 
-        "PrDE": ("prescriptions", "drug_exposure"), 
-        "SeVD": ("services", "visit_detail"), 
-        "TrVD": ("transfers", "visit_detail")
+        "AdCO": ("admissions", "condition_occurrence"),
+        "AdVD": ("admissions", "visit_detail"),
+        "AdVO": ("admissions", "visit_occurrence"),
+        "DiCO": ("diagnoses_icd", "condition_occurrence"),
+        "LaMe": ("labevents", "measurement"),
+        "PaPe": ("patients", "person"),
+        "PrDE": ("prescriptions", "drug_exposure"),
+        "SeVD": ("services", "visit_detail"),
+        "TrVD": ("transfers", "visit_detail"),
     }
     assert split_name in split_name_to_relation_names
     mimic_relation_name = split_name_to_relation_names[split_name][0]
@@ -80,12 +96,18 @@ def dataset_split(split_name):
     return mimic_relation_name, omop_relation_name
 
 
-def load_states(jsonl_file_name, pydantic_type, is_target=False, single_state=False, filter_fn=lambda x: True):
+def load_states(
+    jsonl_file_name,
+    pydantic_type,
+    is_target=False,
+    single_state=False,
+    filter_fn=lambda x: True,
+):
     dataset = get_data_from_jsonl(jsonl_file_name)
     dataset = [each_data for each_data in dataset if filter_fn(each_data)]
     if is_target:
         if single_state:
-            dataset = [{"attributes":dataset}]
+            dataset = [{"attributes": dataset}]
         else:
             dataset = [{"attributes": [each_data]} for each_data in dataset]
     model_list = [pydantic_type.model_validate(each_data) for each_data in dataset]
@@ -123,21 +145,23 @@ Otherwise keep default value False.
 
 
 if __name__ == "__main__":
-    data_path = os.fspath(Path(__file__).resolve().parent.parent.parent / "data" / "schema_matching")
-      
-    preprocess_schema_file(input_schema_file=os.path.join(data_path, "mimic_schema.jsonl"),
-                           output_schema_file=os.path.join(data_path, "mimic_attributes.jsonl"))
+    data_path = os.fspath(
+        Path(__file__).resolve().parent.parent.parent / "data" / "schema_matching"
+    )
 
-    preprocess_schema_file(input_schema_file=os.path.join(data_path, "omop_schema.jsonl"),
-                           output_schema_file=os.path.join(data_path, "omop_attributes.jsonl"))
-    
+    preprocess_schema_file(
+        input_schema_file=os.path.join(data_path, "mimic_schema.jsonl"),
+        output_schema_file=os.path.join(data_path, "mimic_attributes.jsonl"),
+    )
+
+    preprocess_schema_file(
+        input_schema_file=os.path.join(data_path, "omop_schema.jsonl"),
+        output_schema_file=os.path.join(data_path, "omop_attributes.jsonl"),
+    )
+
     preprocess_ground_truth(
         input_ground_truth=os.path.join(data_path, "ground_truth_schema_matches.jsonl"),
         output_ground_truth=os.path.join(data_path, "ground_truth_id_matches.jsonl"),
         mimic_attribute_file=os.path.join(data_path, "mimic_attributes.jsonl"),
-        omop_attribute_file=os.path.join(data_path, "omop_attributes.jsonl")
+        omop_attribute_file=os.path.join(data_path, "omop_attributes.jsonl"),
     )
-
-
-    
-    

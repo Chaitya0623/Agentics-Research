@@ -99,6 +99,7 @@ def get_pydantic_fields(atype: Type[BaseModel]):
 #     # Create DataFrame
 #     return pd.DataFrame(rows)
 
+
 def get_active_fields(state: BaseModel, allowed_fields: Set[str] = None) -> Set[str]:
     """
     Returns the set of fields in `state` that are not None and optionally intersect with allowed_fields.

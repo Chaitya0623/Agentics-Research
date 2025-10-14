@@ -6,13 +6,13 @@ from collections.abc import Iterable
 from typing import (
     Any,
     Awaitable,
+    Callable,
     Dict,
     List,
     Optional,
+    Sequence,
     Type,
     TypeVar,
-    Callable,
-    Sequence,
     Union,
     get_origin,
 )
@@ -21,6 +21,7 @@ import httpx
 import pandas as pd
 from dotenv import load_dotenv
 from loguru import logger
+from numerize.numerize import numerize
 from openai import APIStatusError, AsyncOpenAI
 from pydantic import BaseModel, Field, create_model
 from rich.progress import (
@@ -35,7 +36,6 @@ from rich.progress import (
     TimeElapsedColumn,
     TimeRemainingColumn,
 )
-from numerize.numerize import numerize
 
 A = TypeVar("A", bound=BaseModel)
 
