@@ -42,3 +42,7 @@ invoke.json
 invoke.y*ml
 # Igore profiling flamegraphs
 profile*.svg
+
+# Application-specific data files
+applications/requirement_fsm_code.jsonl
+applications/comment_code.jsonl
