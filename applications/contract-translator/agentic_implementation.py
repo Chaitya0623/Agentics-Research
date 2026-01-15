@@ -97,39 +97,42 @@ class UniversalContractParserProgram(Program):
         
         messages = [
             system_message(
-                """You are an expert contract analyst who can parse ANY type of legal agreement.
+                """You are an expert contract analyst who extracts EXACT, SPECIFIC information from contracts.
                 
-                You handle:
-                - Rental agreements
-                - Employment contracts
-                - Sales agreements
-                - Service contracts
-                - Loan agreements
-                - NDAs
-                - Partnership agreements
-                - Investment agreements
-                - And more...
+                CRITICAL INSTRUCTIONS:
+                1. Extract the EXACT function names mentioned in the contract (e.g., "initializeLease", "payRent", "confirmDelivery")
+                2. Extract the EXACT variable names mentioned (e.g., "monthlyRent", "securityDeposit", "deliveryDate")
+                3. Extract the EXACT state names mentioned (e.g., "Pending", "Active", "Completed", "Terminated")
+                4. Extract the EXACT party roles as described in the contract
+                5. DO NOT use generic placeholders - use the specific terminology from the contract
+                6. Capture ALL conditions, transitions, and logic flows mentioned
                 
-                Your job: Extract ALL relevant information regardless of contract type."""
+                Your goal: Create a structured representation that preserves ALL specific details from the contract text."""
             ),
             user_message(
-                f"""Analyze this contract and extract ALL structured information.
+                f"""Analyze this contract and extract ALL SPECIFIC information exactly as mentioned.
 
 CONTRACT TEXT:
 {contract_text}
 
-First, determine the contract type, then extract all relevant data.
+PAY CLOSE ATTENTION TO:
+1. **Specific Function Names**: If the contract says "The main functions include [initializeLease(), payRent(), terminateLease()]", extract EXACTLY those names
+2. **Specific Variable Names**: If it mentions "monthlyRent", "securityDeposit", "leaseStartDate", extract those EXACT names
+3. **Specific States**: If it mentions states like "Initializing", "Active", "Processing", "Terminated", extract those EXACT state names
+4. **State Transitions**: Capture the EXACT transition logic (e.g., "Initializing → Active when lease starts")
+5. **Specific Conditions**: Extract the EXACT conditions mentioned (e.g., "rent must be paid by day 5 of each month")
+6. **Specific Events**: If events are mentioned like "LeaseInitialized", "RentPaid", extract those EXACT names
 
 Return ONLY valid JSON with this structure:
 {{
     "contract_type": "rental|employment|sales|service|loan|nda|partnership|investment|other",
-    "title": "optional contract title",
+    "title": "specific contract title from text",
     "parties": [
         {{
-            "name": "party name",
-            "role": "their role (buyer/seller/landlord/tenant/employer/etc)",
-            "address": "optional blockchain address",
-            "email": "optional",
+            "name": "EXACT party name from contract",
+            "role": "EXACT role as described (not generic)",
+            "address": "blockchain address if mentioned",
+            "email": "if mentioned",
             "entity_type": "individual|company|organization"
         }}
     ],
@@ -137,42 +140,49 @@ Return ONLY valid JSON with this structure:
         {{
             "amount": number,
             "currency": "ETH|USD|etc",
-            "purpose": "payment|deposit|salary|price|etc",
-            "frequency": "one-time|monthly|annual|etc",
-            "due_date": "optional"
+            "purpose": "EXACT purpose from contract (not 'payment' but 'monthly rent' or 'security deposit')",
+            "frequency": "EXACT frequency from contract",
+            "due_date": "EXACT due date or day of month"
         }}
     ],
     "dates": [
         {{
-            "date_type": "start|end|delivery|payment_due|etc",
-            "value": "date string",
+            "date_type": "EXACT date type from contract (leaseStartDate, deliveryDeadline, etc)",
+            "value": "date string if provided",
             "day_of_month": number or null,
-            "frequency": "optional"
+            "frequency": "if recurring"
         }}
     ],
     "assets": [
         {{
-            "type": "real_estate|goods|services|intellectual_property|etc",
-            "description": "what is it",
-            "location": "optional",
+            "type": "SPECIFIC asset type from contract",
+            "description": "EXACT description from contract",
+            "location": "if mentioned",
             "quantity": number or null,
             "value": number or null
         }}
     ],
     "obligations": [
         {{
-            "party": "who",
-            "description": "what they must do",
-            "deadline": "optional",
-            "penalty_for_breach": "optional"
+            "party": "EXACT party name",
+            "description": "EXACT obligation as written",
+            "deadline": "EXACT deadline if mentioned",
+            "penalty_for_breach": "EXACT penalty if mentioned"
         }}
     ],
-    "special_terms": ["list of special conditions"],
-    "conditions": {{}},
-    "termination_conditions": ["how contract can be terminated"]
+    "special_terms": ["EXACT special conditions word-for-word"],
+    "conditions": {{
+        "function_names": ["EXACT function names from contract: initializeLease, payRent, etc"],
+        "variable_names": ["EXACT variable names: monthlyRent, securityDeposit, tenantAddress, etc"],
+        "state_names": ["EXACT state names: Pending, Active, Completed, Terminated, etc"],
+        "state_transitions": ["EXACT transitions: Pending->Active when X, Active->Completed when Y"],
+        "events": ["EXACT event names: LeaseInitialized, RentPaid, LeaseTerminated, etc"],
+        "logic_conditions": ["EXACT conditions: rent due on day 5, penalty if late > 7 days, etc"]
+    }},
+    "termination_conditions": ["EXACT termination conditions from contract"]
 }}
 
-Extract EVERYTHING relevant to this specific contract type."""
+EXTRACT EVERYTHING SPECIFIC - DO NOT USE GENERIC NAMES OR PLACEHOLDERS."""
             )
         ]
         
@@ -233,45 +243,221 @@ class UniversalSolidityGeneratorProgram(Program):
     def forward(self, schema: UniversalContractSchema, lm: LLM) -> str:
         """Generate contract-type-specific Solidity"""
  
-        requirements = self._get_requirements_for_type(schema.contract_type)
+        # Extract specific function names, variables, states from the parsed schema
+        conditions = schema.conditions if schema.conditions else {}
+        function_names = conditions.get('function_names', [])
+        variable_names = conditions.get('variable_names', [])
+        state_names = conditions.get('state_names', [])
+        state_transitions = conditions.get('state_transitions', [])
+        events = conditions.get('events', [])
+        logic_conditions = conditions.get('logic_conditions', [])
         
         messages = [
             system_message(
-                f"""You are a Solidity expert who generates smart contracts for {schema.contract_type}.
+                f"""You are a Solidity expert who generates COMPLETE, FUNCTIONAL smart contracts.
                 
-                IMPORTANT: Generate DEFENSIVE code that handles missing data gracefully.
-                - For optional fields missing from the contract, use sensible defaults
-                - Never fail a function just because optional contract terms aren't present
-                - Return 0 for uint, address(0) for address, false for bool, "" for string when data is missing
-                - Use if/else checks instead of require() for optional contract conditions
-                - ALL functions must always execute safely, never breaking on missing contract clauses"""
+                CRITICAL GENERATION RULES - STRICT COMPLIANCE REQUIRED:
+                
+                1. SEMANTIC FIDELITY OVER NAME MATCHING
+                   - Never generate functions without FULL implementation
+                   - No placeholder logic, no "// logic goes here" comments
+                   - Every function mentioned must have complete, executable behavior
+                
+                2. EXPLICIT STATE MACHINE ENFORCEMENT
+                   - All states must be reachable and mutually exclusive
+                   - State transitions use require() with clear error messages
+                   - Never allow invalid state transitions
+                   - Every state-dependent function must enforce valid state with require()
+                
+                3. ACCESS CONTROL MUST BE ENFORCED
+                   - All administrative functions use modifiers (onlyOwner, onlyRole, etc)
+                   - No state-changing function callable by arbitrary addresses unless specified
+                   - Define and use access roles consistently
+                
+                4. NO SILENT FAILURES - PROHIBITED PATTERN
+                   - NEVER use: if (condition) return;
+                   - ALWAYS use: require(condition, "Error message");
+                   - All invalid conditions MUST revert with descriptive messages
+                
+                5. ECONOMIC LOGIC MUST BE COMPLETE
+                   - If pricing/fees/swaps/payments mentioned: implement ALL calculations
+                   - Funds MUST be transferred or accounted for
+                   - Variables like price, feeRate, amountRaised MUST be read and written in live logic
+                   - No passive declarations - every financial variable must affect behavior
+                
+                6. TIME-BASED CONDITIONS MUST BE ENFORCED
+                   - If deadlines/start times/durations mentioned: store AND check using block.timestamp
+                   - Time variables MUST affect contract behavior
+                   - Implement automatic state transitions based on time
+                
+                7. EVENT SEMANTICS MUST MATCH ACTIONS
+                   - Events represent real, completed actions only
+                   - Each state change or economic transfer emits separate, specific event
+                   - Never merge unrelated actions into single event (e.g., no "TransferAndApproval")
+                   - Event names must be clear: Transfer, Approval, Swap, Paused, etc
+                
+                8. NO UNUSED OR DECORATIVE CODE
+                   - Every variable, state, function, event MUST be actively used
+                   - If something cannot be implemented: either infer reasonable behavior or omit it
+                   - No "filler" code
+                
+                9. STANDARD SOLIDITY SAFETY - MANDATORY
+                   - Use require() for all validation
+                   - Validate zero addresses
+                   - Ensure invariants (e.g., total supply consistency)
+                   - Use SafeMath patterns where needed
+                
+                10. INTERNAL COHERENCE REQUIRED
+                    - Names must reflect actual behavior
+                    - States correspond to real operational modes
+                    - Functions must not contradict each other
+                    - Variables must not represent multiple concepts
+                
+                FORBIDDEN PATTERNS:
+                - Empty function bodies
+                - Unused state variables
+                - Silent failures (if/return pattern)
+                - Placeholder comments
+                - Decorative events that don't represent real actions
+                - State variables that are never read
+                - Time variables that are never checked
+                - Access-controlled functions without modifiers
+                
+                YOUR GOAL: Generate production-ready, complete, semantically accurate Solidity code."""
             ),
             user_message(
-                f"""Generate a Solidity ^0.8.0 smart contract for this {schema.contract_type}:
+                f"""Generate a COMPLETE, FUNCTIONAL Solidity ^0.8.0 smart contract that FULLY implements this specification.
 
+CONTRACT ANALYSIS:
 {schema.model_dump_json(indent=2)}
 
-Requirements for {schema.contract_type}:
-{requirements}
+SPECIFIC REQUIREMENTS TO IMPLEMENT:
 
-Generate a complete, secure, DEFENSIVE smart contract that:
-1. Handles all parties: {[p.name + ' (' + p.role + ')' for p in schema.parties]}
-2. Manages financial terms: {[f"{t.amount} {t.currency} for {t.purpose}" for t in schema.financial_terms]}
-3. Tracks obligations and conditions
-4. Includes appropriate events
-5. Has proper access control
-6. Handles missing data gracefully - never fails on missing optional terms
-7. Returns sensible defaults for optional fields
+**EXACT Function Names to Implement (WITH FULL LOGIC):**
+{chr(10).join(f"- {fn} (must be fully functional, not a stub)" for fn in function_names) if function_names else "- Extract function names from the obligations and implement them completely"}
 
-DEFENSIVE RULES:
-- Store all parties, dates, and amounts from the contract
-- For missing party addresses, store address(0)
-- For missing amounts, store 0
-- Getter functions ALWAYS return safely, never revert
-- Action functions check if amounts > 0 before processing
-- No require() statements that fail due to missing optional clauses
+**EXACT Variable Names to Use (MUST BE ACTIVELY USED IN LOGIC):**
+{chr(10).join(f"- {vn} (must be read/written in functions, not decorative)" for vn in variable_names) if variable_names else "- Extract variable names from financial terms and dates"}
 
-Return ONLY the Solidity code."""
+**EXACT State Names (MUST ALL BE REACHABLE WITH TRANSITIONS):**
+{chr(10).join(f"- {sn} (implement transition logic TO and FROM this state)" for sn in state_names) if state_names else "- Determine if contract needs states based on transitions"}
+
+**EXACT State Transitions (IMPLEMENT WITH require() CHECKS):**
+{chr(10).join(f"- {st} (use require() to enforce this transition)" for st in state_transitions) if state_transitions else "- Implement any state changes mentioned in obligations"}
+
+**EXACT Event Names (EMIT ON REAL ACTIONS ONLY):**
+{chr(10).join(f"- {ev} (emit when the actual action completes)" for ev in events) if events else "- Create events based on function names (e.g., FunctionNameExecuted)"}
+
+**EXACT Logic Conditions (IMPLEMENT WITH require() AND CALCULATIONS):**
+{chr(10).join(f"- {lc} (enforce this condition in code)" for lc in logic_conditions) if logic_conditions else "- Implement conditions from obligations and special_terms"}
+
+PARTIES TO HANDLE:
+{chr(10).join(f"- {p.name} ({p.role}) - store as state variable with proper type" for p in schema.parties)}
+
+FINANCIAL TERMS TO IMPLEMENT COMPLETELY:
+{chr(10).join(f"- {t.purpose}: {t.amount} {t.currency} ({t.frequency if t.frequency else 'one-time'}) - implement full payment/transfer logic" for t in schema.financial_terms)}
+
+OBLIGATIONS TO IMPLEMENT AS COMPLETE FUNCTIONS:
+{chr(10).join(f"- {o.party} must: {o.description} (deadline: {o.deadline if o.deadline else 'none'}) - implement full logic with checks" for o in schema.obligations)}
+
+MANDATORY IMPLEMENTATION CHECKLIST:
+□ All functions have COMPLETE implementation (no "// TODO" or empty bodies)
+□ All financial variables (price, fee, amount) are USED in calculations
+□ All time variables (deadline, startTime) are CHECKED with block.timestamp
+□ All state transitions use require() to prevent invalid changes
+□ All administrative functions have access control modifiers
+□ All economic transfers actually move funds (msg.value, transfer calls)
+□ All events are emitted when their corresponding action completes
+□ No silent failures - all invalid conditions revert with require()
+□ All declared variables are read or written in at least one function
+□ State machine is complete - all states are reachable and have transitions
+
+STRUCTURE YOUR CONTRACT:
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract [ContractName] {{
+    // === STATE ENUM (if states mentioned) ===
+    enum State {{ {', '.join(state_names) if state_names else 'Active, Completed, Terminated'} }}
+    State public currentState;
+    
+    // === ACCESS CONTROL ===
+    address public owner;
+    // Add role-based addresses for each party
+    
+    modifier onlyOwner() {{
+        require(msg.sender == owner, "Not authorized");
+        _;
+    }}
+    
+    modifier inState(State _state) {{
+        require(currentState == _state, "Invalid state for this action");
+        _;
+    }}
+    
+    // === STATE VARIABLES (using EXACT names) ===
+    // Declare all variables mentioned in contract
+    // CRITICAL: Every variable MUST be used in at least one function
+    
+    // === EVENTS (using EXACT names, separate events for different actions) ===
+    // One event per action type, never merge unrelated actions
+    
+    // === CONSTRUCTOR ===
+    constructor(...) {{
+        owner = msg.sender;
+        // Initialize all state variables
+        // Set initial state
+        currentState = State.[InitialState];
+    }}
+    
+    // === MAIN FUNCTIONS (using EXACT names with FULL implementation) ===
+    // Implement complete logic for each function:
+    // - Access control (modifiers)
+    // - State checks (require currentState)
+    // - Validation (require conditions)
+    // - State updates
+    // - Fund transfers (if applicable)
+    // - Event emissions
+    // - State transitions (if applicable)
+    
+    // === VIEW FUNCTIONS (getters for all state variables) ===
+    // Provide read access to all state
+    
+    // === INTERNAL HELPER FUNCTIONS (if needed) ===
+    // Extract complex logic into private functions
+}}
+```
+
+EXAMPLE OF COMPLETE vs INCOMPLETE:
+
+❌ INCOMPLETE (forbidden):
+```solidity
+function swapTokensForEth(uint256 amount) external {{
+    require(swappingEnabled, "Swap disabled");
+    // Logic goes here
+}}
+```
+
+✅ COMPLETE (required):
+```solidity
+function swapTokensForEth(uint256 amount) external {{
+    require(swappingEnabled, "Swap disabled");
+    require(balances[msg.sender] >= amount, "Insufficient balance");
+    require(address(this).balance >= amount * ethPrice, "Insufficient ETH");
+    
+    balances[msg.sender] -= amount;
+    totalSupply -= amount;
+    
+    uint256 ethAmount = amount * ethPrice;
+    (bool success, ) = msg.sender.call{{value: ethAmount}}("");
+    require(success, "ETH transfer failed");
+    
+    emit TokensSwapped(msg.sender, amount, ethAmount);
+}}
+```
+
+Return ONLY complete, production-ready Solidity code with ALL logic fully implemented."""
             )
         ]
         
@@ -284,7 +470,57 @@ Return ONLY the Solidity code."""
         elif "```" in solidity_code:
             solidity_code = solidity_code.split("```")[1].split("```")[0].strip()
         
+        # Validate code quality
+        quality_issues = self._validate_code_quality(solidity_code, schema)
+        if quality_issues:
+            print(f"\n⚠️  CODE QUALITY ISSUES DETECTED:")
+            for issue in quality_issues:
+                print(f"   - {issue}")
+            print(f"\n   These issues should be addressed in future iterations.")
+        
         return solidity_code
+    
+    def _validate_code_quality(self, solidity_code: str, schema: UniversalContractSchema) -> List[str]:
+        """Validate generated code for common quality issues"""
+        issues = []
+        
+        # Check for placeholder comments
+        if "// logic goes here" in solidity_code.lower() or "// todo" in solidity_code.lower():
+            issues.append("Contains placeholder comments - logic not fully implemented")
+        
+        # Check for silent failure pattern
+        if "if (" in solidity_code and "return;" in solidity_code:
+            lines = solidity_code.split('\n')
+            for i, line in enumerate(lines):
+                if "if (" in line and i + 1 < len(lines) and "return;" in lines[i + 1]:
+                    issues.append(f"Silent failure detected (if/return pattern) - should use require()")
+        
+        # Check if declared variables are used
+        conditions = schema.conditions if schema.conditions else {}
+        variable_names = conditions.get('variable_names', [])
+        for var_name in variable_names[:5]:  # Check first 5 variables
+            if var_name and var_name not in solidity_code:
+                issues.append(f"Variable '{var_name}' from contract not found in generated code")
+        
+        # Check if function names are used
+        function_names = conditions.get('function_names', [])
+        for func_name in function_names[:5]:  # Check first 5 functions
+            if func_name and f"function {func_name}" not in solidity_code:
+                issues.append(f"Function '{func_name}' from contract not implemented")
+        
+        # Check for empty function bodies
+        if "function " in solidity_code and "{ }" in solidity_code:
+            issues.append("Contains empty function bodies")
+        
+        # Check for access control
+        if "onlyOwner" not in solidity_code and "owner" in solidity_code.lower():
+            issues.append("Owner declared but no access control modifier used")
+        
+        # Check for time-based variables that aren't checked
+        if "deadline" in solidity_code.lower() and "block.timestamp" not in solidity_code:
+            issues.append("Time variable declared but never checked against block.timestamp")
+        
+        return issues
     
     def regenerate_with_error_feedback(self, schema: UniversalContractSchema, error_message: str, lm: LLM) -> str:
         """Regenerate contract with compilation error feedback"""
@@ -292,52 +528,54 @@ Return ONLY the Solidity code."""
         print(f"\n🔧 REGENERATING CONTRACT WITH ERROR FEEDBACK")
         print(f"   Error reported: {error_message[:100]}...")
         
-        requirements = self._get_requirements_for_type(schema.contract_type)
+        # Extract specific names from schema
+        conditions = schema.conditions if schema.conditions else {}
+        function_names = conditions.get('function_names', [])
+        variable_names = conditions.get('variable_names', [])
+        state_names = conditions.get('state_names', [])
+        events = conditions.get('events', [])
         
         messages = [
             system_message(
                 f"""You are a Solidity expert debugging and regenerating smart contracts.
 
-IMPORTANT: The previous generation had syntax errors. This regeneration MUST:
-1. Generate ONLY valid Solidity ^0.8.0 code
-2. Ensure ALL statements end with semicolons
-3. Match all parentheses, brackets, and braces
-4. Include only complete, valid Solidity syntax
-5. No incomplete function declarations
-6. No missing statement terminators
-7. Handle all edge cases defensively
-8. Return 0/address(0)/false for missing optional data
+CRITICAL INSTRUCTIONS:
+1. FIX the compilation error: {error_message[:150]}
+2. KEEP the EXACT function names: {', '.join(function_names) if function_names else 'from schema'}
+3. KEEP the EXACT variable names: {', '.join(variable_names) if variable_names else 'from schema'}
+4. KEEP the EXACT state names: {', '.join(state_names) if state_names else 'from schema'}
+5. KEEP the EXACT event names: {', '.join(events) if events else 'from schema'}
+6. DO NOT change to generic names - preserve all specific terminology
 
-CRITICAL: The previous version had this error: {error_message[:150]}
-
-AVOID THIS by:
-- Ensuring EVERY statement ends with ;
-- Completing ALL function bodies
-- Removing any incomplete or dangling code
-- Using only standard Solidity patterns
-- Testing the syntax mentally before generating"""
+MUST GENERATE:
+- Valid Solidity ^0.8.0 syntax
+- Every statement ends with semicolon
+- All function bodies complete
+- All parentheses/brackets matched
+- Exact names from the contract preserved"""
             ),
             user_message(
-                f"""REGENERATE a corrected Solidity ^0.8.0 smart contract for this {schema.contract_type}.
+                f"""REGENERATE the contract fixing this error: {error_message[:200]}
 
-CRITICAL: Fix the previous compilation error: {error_message[:200]}
-
-Contract details:
+CONTRACT SCHEMA:
 {schema.model_dump_json(indent=2)}
 
-Requirements for {schema.contract_type}:
-{requirements}
+PRESERVE THESE EXACT NAMES:
+- Functions: {', '.join(function_names) if function_names else 'extract from obligations'}
+- Variables: {', '.join(variable_names) if variable_names else 'extract from terms'}
+- States: {', '.join(state_names) if state_names else 'extract from transitions'}
+- Events: {', '.join(events) if events else 'create from function names'}
 
-Generate a COMPLETE, SYNTACTICALLY CORRECT smart contract:
-1. Every statement MUST end with semicolon
-2. Every function body MUST be complete
-3. All parentheses/brackets matched
-4. No incomplete or dangling code
-5. Handles all parties defensively: {[p.name for p in schema.parties]}
-6. Manages financial terms: {[f"{t.amount} {t.currency}" for t in schema.financial_terms]}
-7. Completely defensive - returns safely for missing optional data
+REQUIREMENTS:
+1. Fix the syntax error completely
+2. Use EXACT names from above (not generic replacements)
+3. Every statement must end with semicolon
+4. Complete all function bodies
+5. Handle all parties: {[p.name + ' (' + p.role + ')' for p in schema.parties]}
+6. Implement all financial terms: {[f"{t.purpose}: {t.amount} {t.currency}" for t in schema.financial_terms]}
+7. Implement all obligations as functions
 
-Return ONLY valid, compilable Solidity code."""
+Return ONLY valid, compilable Solidity code with EXACT names preserved."""
             )
         ]
         
@@ -954,17 +1192,19 @@ class IBMAgenticContractTranslator:
         print("\n[Phase 1/6] Document Processing")
         if input_path.endswith('.pdf'):
             contract_text = self.extract_text_from_pdf(input_path)
+            source = "PDF"
         else:
             with open(input_path, 'r', encoding='utf-8') as f:
                 contract_text = f.read()
-        print(f"✓ Extracted {len(contract_text)} characters")
+            source = "text file"
+        print(f"✓ Extracted {len(contract_text)} characters from {source}")
         
         yield {
             'phase': 1,
             'status': 'complete',
             'data': {
                 'title': 'Document Processing',
-                'message': f'Extracted {len(contract_text)} characters from PDF'
+                'message': f'Extracted {len(contract_text)} characters from {source}'
             }
         }
         

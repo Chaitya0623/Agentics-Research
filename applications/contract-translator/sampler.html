@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Dataset Contract Sampler</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 20px auto;
+            padding: 20px;
+            background: #1a1a2e;
+            color: #eee;
+        }
+        h1 {
+            color: #00d4ff;
+        }
+        .controls {
+            background: #16213e;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+        button {
+            background: #00d4ff;
+            color: #000;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+            margin-right: 10px;
+        }
+        button:hover {
+            background: #00a8cc;
+        }
+        .contract-display {
+            background: #16213e;
+            padding: 20px;
+            border-radius: 10px;
+            margin-top: 20px;
+        }
+        .contract-text {
+            background: #0f1419;
+            padding: 15px;
+            border-radius: 5px;
+            border-left: 4px solid #00d4ff;
+            white-space: pre-wrap;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+        .metadata {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 10px;
+            margin-top: 15px;
+        }
+        .metadata-item {
+            background: #0f1419;
+            padding: 10px;
+            border-radius: 5px;
+        }
+        .metadata-label {
+            color: #888;
+            font-size: 12px;
+        }
+        .metadata-value {
+            color: #00d4ff;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <h1>Contract Dataset Sampler</h1>
+    <p>Load sample contracts from the research dataset (requirement_fsm_code.jsonl)</p>
+    
+    <div class="controls">
+        <button onclick="loadRandomContract()">Load Random Contract</button>
+        <button onclick="loadSample100()">Load Sample of 100</button>
+        <button onclick="copyToClipboard()">Copy Current Contract</button>
+        <button onclick="openInDemo()">Open in Demo</button>
+    </div>
+
+    <div class="contract-display" id="contractDisplay" style="display: none;">
+        <h2>Contract Description</h2>
+        <div class="contract-text" id="contractText"></div>
+        
+        <div class="metadata" id="metadata"></div>
+    </div>
+
+    <script>
+        let currentContract = null;
+
+        async function loadRandomContract() {
+            console.log('Loading random contract from dataset...');
+            
+            try {
+                const response = await fetch('http://localhost:5000/api/random-contract');
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const data = await response.json();
+                
+                currentContract = {
+                    user_requirement: data.user_requirement,
+                    version: data.version,
+                    fsm: data.fsm,
+                    reference_code: data.reference_code,
+                    total_contracts: data.total_contracts
+                };
+                
+                console.log('Contract loaded from dataset:', currentContract);
+                displayContract();
+                
+            } catch (error) {
+                console.error('Failed to load contract:', error);
+                alert('Failed to load contract from dataset. Make sure the API is running on http://localhost:5000');
+            }
+        }
+
+        function displayContract() {
+            if (!currentContract) return;
+
+            document.getElementById('contractDisplay').style.display = 'block';
+            document.getElementById('contractText').textContent = currentContract.user_requirement;
+            
+            const metadata = document.getElementById('metadata');
+            metadata.innerHTML = `
+                <div class="metadata-item">
+                    <div class="metadata-label">Solidity Version</div>
+                    <div class="metadata-value">${currentContract.version || 'N/A'}</div>
+                </div>
+                <div class="metadata-item">
+                    <div class="metadata-label">Character Count</div>
+                    <div class="metadata-value">${currentContract.user_requirement.length}</div>
+                </div>
+                <div class="metadata-item">
+                    <div class="metadata-label">Dataset Size</div>
+                    <div class="metadata-value">${currentContract.total_contracts || 'Unknown'} contracts</div>
+                </div>
+            `;
+        }
+
+        function copyToClipboard() {
+            if (!currentContract) {
+                alert('No contract loaded');
+                return;
+            }
+
+            navigator.clipboard.writeText(currentContract.user_requirement).then(() => {
+                alert('Contract copied to clipboard!');
+            });
+        }
+
+        function openInDemo() {
+            if (!currentContract) {
+                alert('No contract loaded');
+                return;
+            }
+
+            // Store in localStorage to pass to demo
+            localStorage.setItem('contract_text', currentContract.user_requirement);
+            localStorage.setItem('contract_type', 'other');  // Let demo auto-detect
+            
+            console.log('Saving to localStorage and opening demo...');
+            
+            // Open demo in new tab
+            window.open('demo.html', '_blank');
+            alert('Contract loaded into demo! Check the new tab.');
+        }
+
+        function loadSample100() {
+            alert('To process 100 contracts in batch:\n\npython batch_evaluate.py\n\nThis will load and process 100 random contracts.');
+        }
+
+        // Load first random contract on page load
+        window.onload = function() {
+            console.log('=== Sampler.html loaded ===');
+            console.log('Fetching random contract from API...');
+            loadRandomContract();
+        };
+    </script>
+</body>
+</html>

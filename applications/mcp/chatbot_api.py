@@ -314,33 +314,53 @@ def translate_stream():
     import uuid
     
     try:
-        # Get the uploaded PDF file
-        if 'file' not in request.files:
-            print("❌ No file in request")
-            return Response(f"data: {json.dumps({'error': 'No file provided', 'phase': 0})}\n\n", mimetype='text/event-stream'), 400
+        # Check if text contract or PDF file provided
+        contract_text = request.form.get('contract_text')
+        contract_type = request.form.get('contract_type', 'other')
         
-        file = request.files['file']
-        if file.filename == '':
-            print("❌ Empty filename")
-            return Response(f"data: {json.dumps({'error': 'No file selected', 'phase': 0})}\n\n", mimetype='text/event-stream'), 400
+        if contract_text:
+            # TEXT CONTRACT MODE (NEW)
+            print(f"📝 Processing text contract ({len(contract_text)} chars, type: {contract_type})")
+            
+            # Create a session ID for this translation
+            session_id = str(uuid.uuid4())
+            translation_sessions[session_id] = {'temp_path': None, 'is_text': True}
+            print(f"📋 Created session: {session_id}")
+            
+            # Save text to temporary file
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8') as tmp_file:
+                tmp_file.write(contract_text)
+                temp_text_path = tmp_file.name
+                translation_sessions[session_id]['temp_path'] = temp_text_path
+                print(f"✓ Saved to temp: {temp_text_path}")
         
-        if not file.filename.lower().endswith('.pdf'):
-            print(f"❌ Invalid file type: {file.filename}")
-            return Response(f"data: {json.dumps({'error': 'Only PDF files are supported', 'phase': 0})}\n\n", mimetype='text/event-stream'), 400
-        
-        print(f"📄 Processing file: {file.filename}")
-        
-        # Create a session ID for this translation
-        session_id = str(uuid.uuid4())
-        translation_sessions[session_id] = {'temp_path': None}
-        print(f"📋 Created session: {session_id}")
-        
-        # Save to temporary location
-        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp_file:
-            file.save(tmp_file.name)
-            temp_pdf_path = tmp_file.name
-            translation_sessions[session_id]['temp_path'] = temp_pdf_path
-            print(f"✓ Saved to temp: {temp_pdf_path}")
+        elif 'file' in request.files:
+            # PDF MODE (LEGACY - KEPT FOR COMPATIBILITY)
+            file = request.files['file']
+            if file.filename == '':
+                print("❌ Empty filename")
+                return Response(f"data: {json.dumps({'error': 'No file selected', 'phase': 0})}\n\n", mimetype='text/event-stream'), 400
+            
+            if not file.filename.lower().endswith('.pdf'):
+                print(f"❌ Invalid file type: {file.filename}")
+                return Response(f"data: {json.dumps({'error': 'Only PDF files are supported', 'phase': 0})}\n\n", mimetype='text/event-stream'), 400
+            
+            print(f"📄 Processing file: {file.filename}")
+            
+            # Create a session ID for this translation
+            session_id = str(uuid.uuid4())
+            translation_sessions[session_id] = {'temp_path': None, 'is_text': False}
+            print(f"📋 Created session: {session_id}")
+            
+            # Save to temporary location
+            with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp_file:
+                file.save(tmp_file.name)
+                temp_pdf_path = tmp_file.name
+                translation_sessions[session_id]['temp_path'] = temp_pdf_path
+                print(f"✓ Saved to temp: {temp_pdf_path}")
+        else:
+            print("❌ No contract text or file provided")
+            return Response(f"data: {json.dumps({'error': 'No contract text or file provided', 'phase': 0})}\n\n", mimetype='text/event-stream'), 400
         
         def generate():
             """Generator for Server-Sent Events"""
@@ -356,8 +376,11 @@ def translate_stream():
                 # Set output directory to contract-translator/output
                 output_directory = str(contract_translator_path / "output")
                 
+                # Get the input path (either text file or PDF)
+                input_path = translation_sessions[session_id]['temp_path']
+                
                 for phase_update in translator.translate_contract_streaming(
-                    input_path=temp_pdf_path,
+                    input_path=input_path,
                     output_dir=output_directory,
                     require_audit_approval=False,
                     generate_mcp_server=True
@@ -737,6 +760,55 @@ def translate_contract_endpoint():
 def health():
     """Health check endpoint"""
     return jsonify({"status": "ok", "mcp_connected": current_mcp_client is not None})
+
+
+@app.route('/api/random-contract', methods=['GET'])
+def random_contract():
+    """Get a random contract from the dataset (requirement_fsm_code.jsonl)"""
+    import random
+    
+    try:
+        # Path to dataset
+        dataset_path = Path(__file__).parent.parent / 'requirement_fsm_code.jsonl'
+        
+        if not dataset_path.exists():
+            return jsonify({
+                "error": "Dataset not found",
+                "path": str(dataset_path)
+            }), 404
+        
+        # Read all contracts
+        contracts = []
+        with open(dataset_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        contract = json.loads(line)
+                        contracts.append(contract)
+                    except json.JSONDecodeError:
+                        continue
+        
+        if not contracts:
+            return jsonify({"error": "No contracts found in dataset"}), 404
+        
+        # Select random contract
+        random_contract = random.choice(contracts)
+        
+        # Extract relevant fields
+        return jsonify({
+            "user_requirement": random_contract.get('user_requirement', ''),
+            "version": random_contract.get('version', '0.8.0'),
+            "fsm": random_contract.get('FSM', ''),
+            "reference_code": random_contract.get('code', ''),
+            "total_contracts": len(contracts)
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "error": str(e),
+            "message": "Failed to load contract from dataset"
+        }), 500
 
 
 @app.route('/api/test', methods=['GET'])
@@ -1172,7 +1244,9 @@ if __name__ == '__main__':
     print("Starting Chatbot API Server...")
     print("Available endpoints:")
     print("  GET  /api/health          - Health check")
+    print("  GET  /api/random-contract - Get random contract from dataset")
     print("  GET  /api/test            - Test endpoint")
+    print("  POST /api/translate-stream - Translate contract (streaming)")
     print("  POST /api/translate       - Translate contract PDF")
     print("  POST /api/connect         - Connect to MCP server")
     print("  POST /api/chat            - Send chat message")
