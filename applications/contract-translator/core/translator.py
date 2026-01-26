@@ -25,16 +25,24 @@ from .task_builders import (
     create_abi_generator_task_description,
     create_mcp_task_description
 )
-from .agents import _convert_to_crew_llm
+from .agents import (
+    _convert_to_crew_llm,
+    create_agents,
+    should_refine,
+    create_refinement_task_description,
+    DEFAULT_MAX_REFINEMENT_ITERATIONS
+)
 
 
 class IBMAgenticContractTranslator:
-    def __init__(self, model: str = "gpt-4o-mini"):
+    def __init__(self, model: str = "gpt-4o-mini", enable_reinforcement: bool = True, max_refinement_iterations: int = DEFAULT_MAX_REFINEMENT_ITERATIONS):
         """
         Initialize translator with Agentic pipeline using CrewAI Agents and Tasks
         
         Args:
             model: LLM model to use (default: gpt-4o-mini for OpenAI)
+            enable_reinforcement: If True, enables automatic code refinement when audit fails
+            max_refinement_iterations: Maximum number of refine-audit loops (default: 2)
         
         Note: IBM Agentics requires OPENAI_API_KEY in environment
         """
@@ -46,6 +54,10 @@ class IBMAgenticContractTranslator:
                 "IBM Agentics uses OpenAI models by default."
             )
         
+        # Store reinforcement settings
+        self.enable_reinforcement = enable_reinforcement
+        self.max_refinement_iterations = max_refinement_iterations
+        
         # Initialize Agentics LLM
         self.llm = LLM(model=model)
         
@@ -53,6 +65,8 @@ class IBMAgenticContractTranslator:
         self.crew_llm = _convert_to_crew_llm(self.llm)
         
         print(f"✓ IBM Agentics LLM initialized with {model}")
+        if enable_reinforcement:
+            print(f"🔄 Reinforcement loop enabled (max {max_refinement_iterations} iterations)")
         print("🤖 Initializing Agentic Pipeline with Agents...")
         
         # Keep legacy Program instances for backward compatibility
@@ -68,91 +82,23 @@ class IBMAgenticContractTranslator:
         print("✓ All Agents initialized for agentic pipeline\n")
     
     def _create_agents(self):
-        """Create specialized agents for each phase of translation"""
+        """Create specialized agents for each phase of translation using shared agent creation"""
         
-        # Phase 2: Contract Parser Agent
-        self.parser_agent = Agent(
-            role="Contract Analysis Expert",
-            goal="Extract precise, specific information from legal contracts",
-            backstory=(
-                "You are an expert contract analyst specializing in extracting exact terminology, "
-                "function names, variable names, states, and conditions from legal documents. "
-                "You never use generic placeholders - only specific terms from the contract."
-            ),
-            llm=self.crew_llm,
-            verbose=False,
-            allow_delegation=False
-        )
+        # Use shared create_agents function with reinforcement enabled based on settings
+        agents = create_agents(self.crew_llm, enable_reinforcement=self.enable_reinforcement)
         
-        # Phase 3: Solidity Generator Agent
-        self.generator_agent = Agent(
-            role="Solidity Smart Contract Developer",
-            goal="Generate complete, production-ready Solidity smart contracts",
-            backstory=(
-                "You are a Solidity expert who generates COMPLETE, FUNCTIONAL smart contracts. "
-                "You implement every function with full logic, use require() for validation, "
-                "implement proper access control, and ensure all variables are actively used. "
-                "You never write placeholder code or empty functions."
-            ),
-            llm=self.crew_llm,
-            verbose=False,
-            allow_delegation=False
-        )
+        # Assign agents to instance attributes
+        self.parser_agent = agents['parser_agent']
+        self.generator_agent = agents['generator_agent']
+        self.auditor_agent = agents['auditor_agent']
+        self.abi_agent = agents['abi_agent']
+        self.mcp_agent = agents['mcp_agent']
         
-        # Phase 4: Security Auditor Agent
-        self.auditor_agent = Agent(
-            role="Blockchain Security Auditor",
-            goal="Identify security vulnerabilities in smart contracts with actionable recommendations",
-            backstory=(
-                "You are a blockchain security expert specializing in Solidity smart contract auditing. "
-                "You systematically check for: reentrancy attacks (check external calls + state changes), "
-                "access control flaws (verify onlyOwner/modifiers on sensitive functions), "
-                "integer overflow/underflow (analyze arithmetic operations), "
-                "unprotected ether withdrawal (check payable functions + transfer logic), "
-                "denial of service vulnerabilities (unbounded loops, block gas limits), "
-                "front-running risks (transaction ordering dependencies), "
-                "timestamp manipulation (avoid using block.timestamp for critical logic), "
-                "and unchecked external calls (verify return values). "
-                "You provide severity ratings (none/low/medium/high/critical) based on exploitability and impact. "
-                "You give specific line references and concrete remediation steps, not generic advice."
-            ),
-            llm=self.crew_llm,
-            verbose=False,
-            allow_delegation=False
-        )
-        
-        # Phase 5: ABI Generator Agent
-        self.abi_agent = Agent(
-            role="Ethereum ABI Specialist",
-            goal="Generate complete, accurate ABI specifications from Solidity contracts",
-            backstory=(
-                "You are an Ethereum ABI expert who generates precise, complete ABI JSON from Solidity contracts. "
-                "You extract ALL public/external functions with correct parameter types (address, uint256, string, etc.), "
-                "capture the constructor with its initialization parameters, "
-                "include ALL events with their indexed parameters for filtering, "
-                "specify correct state mutability (pure, view, payable, nonpayable), "
-                "and ensure type arrays match Solidity declarations exactly (uint256[], address[], etc.). "
-                "You never omit functions, never use wrong types, and always preserve parameter names for debugging. "
-                "Your ABI output must be valid JSON that can be used directly with web3.js or ethers.js."
-            ),
-            llm=self.crew_llm,
-            verbose=False,
-            allow_delegation=False
-        )
-        
-        # Phase 6: MCP Server Generator Agent
-        self.mcp_agent = Agent(
-            role="MCP Server Developer",
-            goal="Generate production-ready MCP server code for blockchain interaction",
-            backstory=(
-                "You are an expert Python developer specializing in Web3.py and MCP server generation. "
-                "You create complete, self-contained MCP servers with proper error handling and "
-                "transaction management for smart contract interaction."
-            ),
-            llm=self.crew_llm,
-            verbose=False,
-            allow_delegation=False
-        )
+        # Store refiner agent if reinforcement is enabled
+        if self.enable_reinforcement and 'refiner_agent' in agents:
+            self.refiner_agent = agents['refiner_agent']
+        else:
+            self.refiner_agent = None
     
     def _clean_code_block(self, code: str) -> str:
         """
@@ -404,6 +350,82 @@ class IBMAgenticContractTranslator:
         score = audit_report.get('security_score', 'N/A')
         print(f"✓ Audit Complete: Severity={severity}, Score={score}")
         
+        # ===== REINFORCEMENT LOOP: Refine if needed =====
+        refinement_count = 0
+        while self.enable_reinforcement and self.refiner_agent and should_refine(audit_report, refinement_count, self.max_refinement_iterations):
+            refinement_count += 1
+            print(f"\n[Phase 4.{refinement_count}] Reinforcement: Refining contract (iteration {refinement_count}/{self.max_refinement_iterations})")
+            
+            # Create refinement task based on audit findings
+            task_refine = Task(
+                description=create_refinement_task_description(solidity_code, audit_report),
+                expected_output="Fixed Solidity smart contract code with all vulnerabilities addressed",
+                agent=self.refiner_agent
+            )
+            
+            crew_refine = Crew(
+                agents=[self.refiner_agent],
+                tasks=[task_refine],
+                verbose=False
+            )
+            
+            refine_result = crew_refine.kickoff()
+            refined_code = str(refine_result).strip()
+            
+            # Clean markdown code fences
+            if "```solidity" in refined_code:
+                refined_code = refined_code.split("```solidity")[1].split("```")[0].strip()
+            elif "```" in refined_code:
+                refined_code = refined_code.split("```")[1].split("```")[0].strip()
+            
+            solidity_code = refined_code
+            results['solidity'] = solidity_code
+            print(f"✓ Refined contract: {len(solidity_code.splitlines())} lines")
+            
+            # Re-audit the refined code
+            print(f"\n[Phase 4.{refinement_count}b] Re-auditing refined contract")
+            
+            task_re_audit = Task(
+                description=create_audit_task_description(solidity_code),
+                expected_output="JSON object with security audit results",
+                agent=self.auditor_agent
+            )
+            
+            crew_re_audit = Crew(
+                agents=[self.auditor_agent],
+                tasks=[task_re_audit],
+                verbose=False
+            )
+            
+            re_audit_result = crew_re_audit.kickoff()
+            re_audit_text = str(re_audit_result).strip()
+            
+            # Parse re-audit JSON
+            if "```json" in re_audit_text:
+                re_audit_text = re_audit_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in re_audit_text:
+                re_audit_text = re_audit_text.split("```")[1].split("```")[0].strip()
+            
+            try:
+                audit_report = json.loads(re_audit_text)
+            except:
+                audit_report = {
+                    "severity_level": "unknown",
+                    "approved": False,
+                    "issues": ["Failed to parse re-audit report"],
+                    "recommendations": [],
+                    "vulnerability_count": 0,
+                    "security_score": "N/A"
+                }
+            
+            results['audit'] = audit_report
+            severity = audit_report.get('severity_level', 'unknown')
+            score = audit_report.get('security_score', 'N/A')
+            print(f"✓ Re-audit Complete: Severity={severity}, Score={score}")
+        
+        if refinement_count > 0:
+            print(f"\n✓ Reinforcement loop completed after {refinement_count} iteration(s)")
+        
         # ===== PHASE 5: ABI Generation (ABI Agent) =====
         print("\n[Phase 5/6] Interface Generation (ABI Agent)")
         
@@ -648,17 +670,75 @@ class IBMAgenticContractTranslator:
             issues = audit_report.get('issues', [])
             print(f"✓ Audit Complete: Severity={severity}, Score={score}")
             
+            # ===== REINFORCEMENT LOOP: Refine if needed =====
+            refinement_count = 0
+            while self.enable_reinforcement and self.refiner_agent and should_refine(audit_report, refinement_count, self.max_refinement_iterations):
+                refinement_count += 1
+                print(f"\n[Phase 4.{refinement_count}] Reinforcement: Refining contract (iteration {refinement_count}/{self.max_refinement_iterations})")
+                
+                yield {
+                    'phase': 4,
+                    'status': 'refining',
+                    'data': {
+                        'title': 'Security Refinement',
+                        'message': f'Refining contract (iteration {refinement_count}/{self.max_refinement_iterations})',
+                        'iteration': refinement_count,
+                        'max_iterations': self.max_refinement_iterations
+                    }
+                }
+                
+                # Create refinement task based on audit findings
+                task_refine_desc = create_refinement_task_description(solidity_code, audit_report)
+                task_refine = Task(description=task_refine_desc, expected_output="Fixed Solidity code", agent=self.refiner_agent)
+                crew_refine = Crew(agents=[self.refiner_agent], tasks=[task_refine], verbose=False)
+                
+                try:
+                    result_raw = crew_refine.kickoff()
+                    refined_code = str(result_raw.raw) if hasattr(result_raw, 'raw') else str(result_raw)
+                    refined_code = self._clean_code_block(refined_code)
+                    solidity_code = refined_code
+                    results['solidity'] = solidity_code
+                    print(f"✓ Refined contract: {len(solidity_code.splitlines())} lines")
+                except Exception as e:
+                    print(f"   ⚠️  Refinement failed: {e}")
+                    break
+                
+                # Re-audit the refined code
+                print(f"\n[Phase 4.{refinement_count}b] Re-auditing refined contract")
+                task_re_audit_desc = create_audit_task_description(solidity_code)
+                task_re_audit = Task(description=task_re_audit_desc, expected_output="Security audit JSON", agent=self.auditor_agent)
+                crew_re_audit = Crew(agents=[self.auditor_agent], tasks=[task_re_audit], verbose=False)
+                
+                try:
+                    result_raw = crew_re_audit.kickoff()
+                    result_text = str(result_raw.raw) if hasattr(result_raw, 'raw') else str(result_raw)
+                    audit_report = self._extract_json(result_text, dict)
+                    results['audit'] = audit_report
+                except Exception as e:
+                    print(f"   ⚠️  Re-audit failed: {e}")
+                    break
+                
+                severity = audit_report.get('severity_level', 'unknown')
+                score = audit_report.get('security_score', 'N/A')
+                issues = audit_report.get('issues', [])
+                print(f"✓ Re-audit Complete: Severity={severity}, Score={score}")
+            
+            if refinement_count > 0:
+                print(f"\n✓ Reinforcement loop completed after {refinement_count} iteration(s)")
+            
             yield {
                 'phase': 4,
                 'status': 'needs_approval',
                 'data': {
                     'title': 'Security Audit',
-                    'message': f'Severity: {severity.upper()}, Score: {score}',
+                    'message': f'Severity: {severity.upper()}, Score: {score}' + (f' (after {refinement_count} refinement(s))' if refinement_count > 0 else ''),
                     'severity_level': severity,
                     'security_score': score,
                     'issues': issues,
                     'vulnerability_count': audit_report.get('vulnerability_count', 0),
-                    'recommendations': audit_report.get('recommendations', [])
+                    'recommendations': audit_report.get('recommendations', []),
+                    'refinement_iterations': refinement_count,
+                    'solidity': solidity_code  # Include updated code if refined
                 }
             }
             

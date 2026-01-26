@@ -35,6 +35,14 @@ from .task_builders import (
     create_abi_generator_task_description,
 )
 
+from .agents import (
+    create_agents,
+    should_refine,
+    create_refinement_task_description,
+    _convert_to_crew_llm,
+    DEFAULT_MAX_REFINEMENT_ITERATIONS,
+)
+
 from .translator import IBMAgenticContractTranslator
 
 __all__ = [
@@ -58,6 +66,12 @@ __all__ = [
     'create_solidity_generator_task_description',
     'create_audit_task_description',
     'create_abi_generator_task_description',
+    # Agent utilities
+    'create_agents',
+    'should_refine',
+    'create_refinement_task_description',
+    '_convert_to_crew_llm',
+    'DEFAULT_MAX_REFINEMENT_ITERATIONS',
     # Main Translator
     'IBMAgenticContractTranslator',
 ]

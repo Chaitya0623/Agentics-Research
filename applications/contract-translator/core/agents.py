@@ -5,21 +5,21 @@ Defines specialized agents for each translation phase:
 - Parser Agent: Extract structured contract data
 - Generator Agent: Create Solidity code
 - Auditor Agent: Security analysis
+- Refiner Agent: Fix security vulnerabilities (reinforcement loop)
 - ABI Agent: Generate contract ABI
 - MCP Agent: Generate MCP server code
 
-Also provides a reinforcement loop pipeline that iterates on contract generation
-and validation, learning from previous errors through conditional task execution.
+The reinforcement logic is integrated directly into agent creation and the pipeline,
+enabling automatic code refinement when security audits identify issues.
 """
 
-import io
-import sys
-from contextlib import redirect_stdout
-from typing import Callable, Optional
-
 import os
-from crewai import Agent, Task, Crew, LLM as CrewLLM
-from pydantic import BaseModel
+from typing import Dict, Any, Optional
+from crewai import Agent, LLM as CrewLLM
+
+
+# Default maximum refinement iterations for the reinforcement loop
+DEFAULT_MAX_REFINEMENT_ITERATIONS = 2
 
 
 def _convert_to_crew_llm(agentics_llm) -> CrewLLM:
@@ -41,15 +41,16 @@ def _convert_to_crew_llm(agentics_llm) -> CrewLLM:
     )
 
 
-def create_agents(crew_llm: CrewLLM) -> dict:
+def create_agents(crew_llm: CrewLLM, enable_reinforcement: bool = True) -> dict:
     """
     Create all specialized agents for the translation pipeline.
     
     Args:
         crew_llm: CrewAI LLM instance
+        enable_reinforcement: If True, includes a Refiner Agent for the reinforcement loop
         
     Returns:
-        Dictionary with agent instances for each phase
+        Dictionary with agent instances for each phase, including refiner_agent if enabled
     """
     
     # Phase 2: Contract Parser Agent
@@ -87,7 +88,9 @@ def create_agents(crew_llm: CrewLLM) -> dict:
         goal="Identify security vulnerabilities in smart contracts",
         backstory=(
             "You are a blockchain security expert who audits smart contracts for vulnerabilities. "
-            "You check for reentrancy, access control issues, integer overflow, and other common exploits."
+            "You check for reentrancy, access control issues, integer overflow, and other common exploits. "
+            "You provide severity ratings (none/low/medium/high/critical) based on exploitability and impact. "
+            "You give specific line references and concrete remediation steps, not generic advice."
         ),
         llm=crew_llm,
         verbose=False,
@@ -121,240 +124,115 @@ def create_agents(crew_llm: CrewLLM) -> dict:
         allow_delegation=False
     )
     
-    return {
+    agents = {
         'parser_agent': parser_agent,
         'generator_agent': generator_agent,
         'auditor_agent': auditor_agent,
         'abi_agent': abi_agent,
         'mcp_agent': mcp_agent,
     }
-
-
-class ContractData(BaseModel):
-    """Pydantic model for contract data passed through the task pipeline."""
-    extracted_terms: Optional[dict] = None
-    contract_code: Optional[str] = None
-    security_audit: Optional[str] = None
-    audit_passed: bool = False
-    refinement_needed: bool = False
-    error_log: Optional[str] = None
-    abi_spec: Optional[str] = None
-    mcp_server_code: Optional[str] = None
-
-
-def create_reinforcement_pipeline(
-    contract_input: str,
-    crew_llm: CrewLLM,
-    tools: Optional[list] = None,
-    on_log: Optional[Callable[[str], None]] = None,
-) -> tuple[ContractData, str]:
-    """
-    Create a reinforcement learning pipeline for contract generation.
     
-    The pipeline follows this workflow:
-    1. Parse: Extract contract terms and requirements
-    2. Generate: Create initial Solidity code
-    3. Audit: Perform security analysis
-    4. Refine: Fix issues if audit fails (conditional)
-    5. Re-audit: Re-validate after refinement (conditional)
-    6. Generate ABI: Create ABI specification
-    7. Generate MCP: Create MCP server code
+    # Add Refiner Agent for reinforcement loop if enabled
+    if enable_reinforcement:
+        refiner_agent = Agent(
+            role="Smart Contract Security Refiner",
+            goal="Fix all identified security vulnerabilities in Solidity smart contracts",
+            backstory=(
+                "You are a Solidity security specialist who fixes smart contract vulnerabilities. "
+                "Given a contract and a list of security issues from an audit, you rewrite the code "
+                "to address every vulnerability while maintaining the original functionality. "
+                "You follow the Checks-Effects-Interactions pattern, add reentrancy guards where needed, "
+                "implement proper access control, validate all inputs with require(), "
+                "and ensure no silent failures. You return ONLY the fixed Solidity code."
+            ),
+            llm=crew_llm,
+            verbose=False,
+            allow_delegation=False
+        )
+        agents['refiner_agent'] = refiner_agent
+    
+    return agents
+
+
+def should_refine(audit_report: Dict[str, Any], refinement_count: int, max_iterations: int = DEFAULT_MAX_REFINEMENT_ITERATIONS) -> bool:
+    """
+    Determine if the contract should go through refinement based on audit results.
+    
+    This is the decision function for the reinforcement loop. It checks:
+    1. Whether there are remaining refinement iterations
+    2. Whether the audit found issues requiring fixes
     
     Args:
-        contract_input: Legal contract or requirements as string
-        crew_llm: CrewAI LLM instance
-        tools: Optional list of tools to provide to agents
-        on_log: Optional callback function to receive log updates
+        audit_report: The security audit report dictionary
+        refinement_count: Current number of refinement iterations completed
+        max_iterations: Maximum allowed refinement iterations
         
     Returns:
-        Tuple of (final_contract_data, log_output)
+        True if refinement should be performed, False otherwise
     """
-    if tools is None:
-        tools = []
+    if refinement_count >= max_iterations:
+        return False
     
-    # Create all agents
-    agents_dict = create_agents(crew_llm)
+    severity = audit_report.get('severity_level', 'unknown').lower()
+    approved = audit_report.get('approved', False)
     
-    # Task 1: Parse contract and extract terms
-    task_parse = Task(
-        description=(
-            f"Extract structured information from the contract:\n{contract_input}\n\n"
-            "Identify: function names, state variables, business logic requirements, "
-            "access control needs, and key states."
-        ),
-        expected_output="Extracted contract terms and requirements as structured data",
-        agent=agents_dict['parser_agent'],
-        tools=tools,
-        memory_key="contract_data"
-    )
+    # Refine if not approved and severity is medium or higher
+    if not approved and severity in ['medium', 'high', 'critical']:
+        return True
     
-    # Task 2: Generate initial Solidity contract
-    task_generate = Task(
-        description=(
-            "Generate a complete, production-ready Solidity smart contract based on "
-            "the extracted contract terms. Include proper error handling, access control, "
-            "and comprehensive state management."
-        ),
-        expected_output="Complete Solidity smart contract code",
-        agent=agents_dict['generator_agent'],
-        tools=tools,
-        input_variables=["contract_data"],
-        memory_key="contract_data"
-    )
+    return False
+
+
+def create_refinement_task_description(solidity_code: str, audit_report: Dict[str, Any]) -> str:
+    """
+    Create task description for the Refiner Agent based on audit findings.
     
-    # Task 3: Perform security audit
-    task_audit = Task(
-        description=(
-            "Audit the generated Solidity contract for security vulnerabilities. "
-            "Check for: reentrancy issues, integer overflow/underflow, access control "
-            "problems, unchecked external calls, and other common exploits. "
-            "Provide detailed findings."
-        ),
-        expected_output="Security audit report with vulnerabilities and risk assessment",
-        agent=agents_dict['auditor_agent'],
-        tools=tools,
-        input_variables=["contract_data"],
-        memory_key="contract_data"
-    )
-    
-    # Task 4: Refine contract based on audit findings (conditional)
-    task_refine = Task(
-        description=(
-            "Fix all identified security vulnerabilities and issues in the Solidity contract. "
-            "Rewrite problematic sections to follow best practices and ensure all audit "
-            "findings are addressed."
-        ),
-        expected_output="Refined Solidity smart contract with vulnerabilities fixed",
-        agent=agents_dict['generator_agent'],
-        tools=tools,
-        input_variables=["contract_data"],
-        memory_key="contract_data",
-        should_write_memory=True,
-        condition=lambda mem: (
-            hasattr(mem, 'contract_data') and 
-            mem.contract_data.refinement_needed
-        )
-    )
-    
-    # Task 5: Re-audit after refinement (conditional)
-    task_re_audit = Task(
-        description=(
-            "Re-audit the refined Solidity contract to verify that all previously "
-            "identified vulnerabilities have been fixed and no new issues were introduced."
-        ),
-        expected_output="Final security audit report confirming vulnerability fixes",
-        agent=agents_dict['auditor_agent'],
-        tools=tools,
-        input_variables=["contract_data"],
-        memory_key="contract_data",
-        should_write_memory=True,
-        condition=lambda mem: (
-            hasattr(mem, 'contract_data') and 
-            mem.contract_data.refinement_needed
-        )
-    )
-    
-    # Task 6: Generate ABI specification
-    task_abi = Task(
-        description=(
-            "Generate the complete Ethereum ABI (Application Binary Interface) "
-            "specification from the final Solidity contract. Include all functions, "
-            "events, constructor parameters, and state variable accessors."
-        ),
-        expected_output="JSON ABI specification for the smart contract",
-        agent=agents_dict['abi_agent'],
-        tools=tools,
-        input_variables=["contract_data"],
-        memory_key="contract_data",
-        should_write_memory=True
-    )
-    
-    # Task 7: Generate MCP server code
-    task_mcp = Task(
-        description=(
-            "Generate a complete, production-ready MCP (Model Context Protocol) server "
-            "for interacting with the deployed smart contract. Include proper error handling, "
-            "transaction management, and Web3.py integration."
-        ),
-        expected_output="Python MCP server code for smart contract interaction",
-        agent=agents_dict['mcp_agent'],
-        tools=tools,
-        input_variables=["contract_data"],
-        memory_key="contract_data",
-        should_write_memory=True
-    )
-    
-    # Create crew with all tasks in reinforcement order
-    crew = Crew(
-        agents=[
-            agents_dict['parser_agent'],
-            agents_dict['generator_agent'],
-            agents_dict['auditor_agent'],
-            agents_dict['mcp_agent'],
-            agents_dict['abi_agent'],
-        ],
-        tasks=[task_parse, task_generate, task_audit, task_refine, task_re_audit, task_abi, task_mcp],
-        verbose=True,
-        output_memory_key="contract_data"
-    )
-    
-    # Capture logs during execution
-    log_buffer = io.StringIO()
-    original_stdout = sys.stdout
-    
-    class _StdoutLogger:
-        def write(self, data):
-            original_stdout.write(data)
-            log_buffer.write(data)
-            if on_log:
-                on_log(log_buffer.getvalue())
-            return len(data)
+    Args:
+        solidity_code: The current Solidity code that needs fixing
+        audit_report: The security audit report with issues to fix
         
-        def flush(self):
-            original_stdout.flush()
+    Returns:
+        Task description string for the refiner agent
+    """
+    issues = audit_report.get('issues', [])
+    recommendations = audit_report.get('recommendations', [])
+    severity = audit_report.get('severity_level', 'unknown')
     
-    # Run the reinforcement pipeline
-    with redirect_stdout(_StdoutLogger()):
-        result = crew.kickoff(inputs={"description": contract_input})
+    issues_text = "\n".join(f"  - {issue}" for issue in issues) if issues else "  - No specific issues listed"
+    recommendations_text = "\n".join(f"  - {rec}" for rec in recommendations) if recommendations else "  - No specific recommendations"
     
-    # Extract final contract data from crew output
-    final_data = None
-    
-    # Strategy 1: Check tasks_output for ContractData
-    if hasattr(result, "tasks_output") and result.tasks_output:
-        for task_output in reversed(result.tasks_output):
-            if hasattr(task_output, "pydantic") and task_output.pydantic:
-                pydantic_obj = task_output.pydantic
-                if isinstance(pydantic_obj, ContractData):
-                    final_data = pydantic_obj
-                    break
-            elif isinstance(task_output, ContractData):
-                final_data = task_output
-                break
-    
-    # Strategy 2: Check if result itself is ContractData
-    if not final_data and isinstance(result, ContractData):
-        final_data = result
-    
-    # Strategy 3: Create ContractData from dict if available
-    if not final_data and isinstance(result, dict):
-        try:
-            final_data = ContractData(**result)
-        except Exception:
-            pass
-    
-    # Fallback: Create minimal ContractData with logs
-    if not final_data:
-        final_data = ContractData(
-            error_log=str(result) if result else "No contract data extracted"
-        )
-    
-    return final_data, log_buffer.getvalue()
+    return f"""Fix ALL security vulnerabilities in this Solidity smart contract.
+
+CURRENT CONTRACT CODE:
+```solidity
+{solidity_code}
+```
+
+SECURITY AUDIT FINDINGS (Severity: {severity.upper()}):
+{issues_text}
+
+REQUIRED FIXES:
+{recommendations_text}
+
+CRITICAL REQUIREMENTS:
+1. Fix EVERY issue listed above - do not skip any vulnerability
+2. Follow the Checks-Effects-Interactions pattern for all external calls
+3. Add reentrancy guards (nonReentrant modifier) where needed
+4. Ensure ALL state changes happen BEFORE external calls
+5. Add proper access control (onlyOwner, role-based) on sensitive functions
+6. Validate ALL inputs with require() statements - no silent failures
+7. Check for zero addresses on address parameters
+8. Ensure arithmetic operations are safe (Solidity ^0.8.0 has built-in overflow protection)
+9. Preserve the original contract functionality while fixing security issues
+
+Return ONLY the complete, fixed Solidity code with ALL vulnerabilities addressed.
+Do not include explanations - just the corrected code."""
 
 
 __all__ = [
     'create_agents',
-    'create_reinforcement_pipeline',
-    'ContractData',
-    '_convert_to_crew_llm'
+    'should_refine',
+    'create_refinement_task_description',
+    '_convert_to_crew_llm',
+    'DEFAULT_MAX_REFINEMENT_ITERATIONS'
 ]
