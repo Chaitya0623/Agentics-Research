@@ -115,7 +115,8 @@
         { title: 'Phase 3: Code Generation', icon: '⚙️', color: 'from-green-500 to-emerald-500' },
         { title: 'Phase 4: Security Audit', icon: '🔐', color: 'from-yellow-500 to-orange-500' },
         { title: 'Phase 5: ABI Generation', icon: '📋', color: 'from-red-500 to-rose-500' },
-        { title: 'Phase 6: MCP Server Generation', icon: '🤖', color: 'from-indigo-500 to-purple-500' }
+        { title: 'Phase 6: MCP Server Generation', icon: '🤖', color: 'from-indigo-500 to-purple-500' },
+        { title: 'Phase 7: Quality Evaluation', icon: '📊', color: 'from-teal-500 to-cyan-500' }
       ];
 
       // Start translation process - WITH REAL-TIME SERVER-SENT EVENTS STREAMING AND AUDIT APPROVAL
@@ -204,14 +205,15 @@
                   const phaseNum = eventData.phase;
                   setPhase(phaseNum);
 
-                  const progressMap = { 1: 25, 2: 35, 3: 50, 4: 65, 5: 80, 6: 100 };
+                  const progressMap = { 1: 20, 2: 30, 3: 45, 4: 60, 5: 75, 6: 90, 7: 100 };
                   const titleMap = {
                     1: 'Document Processing',
                     2: 'Contract Analysis',
                     3: 'Code Generation',
                     4: 'Security Audit',
                     5: 'ABI Generation',
-                    6: 'MCP Server Generation'
+                    6: 'MCP Server Generation',
+                    7: 'Quality Evaluation'
                   };
 
                   setCurrentPhaseInfo({
@@ -247,6 +249,10 @@
                   if (eventData.data.mcp_server) {
                     setGeneratedData(prev => ({ ...prev, mcp: eventData.data.mcp_server }));
                     console.log('✅ MCP server code stored');
+                  }
+                  if (eventData.data.quality_evaluation) {
+                    setGeneratedData(prev => ({ ...prev, quality: eventData.data.quality_evaluation }));
+                    console.log('✅ Quality evaluation stored');
                   }
 
                 } catch (e) {
@@ -419,17 +425,17 @@
                   disabled={!contractText || !contractText.trim()}
                   className="w-full px-6 py-3 bg-gradient-to-r from-purple-600 to-pink-600 text-white font-bold rounded-lg hover:from-purple-700 hover:to-pink-700 disabled:from-gray-600 disabled:to-gray-600 disabled:cursor-not-allowed transition-all"
                 >
-                  {contractText && contractText.trim() ? '🚀 Start 6-Phase Translation' : '📝 Enter Contract Text to Begin'}
+                  {contractText && contractText.trim() ? '🚀 Start 7-Phase Translation' : '📝 Enter Contract Text to Begin'}
                 </button>
               </div>
             )}
 
             {/* Phases 1-5: Process Display */}
-            {phase > 0 && phase < 6 && (
+            {phase > 0 && phase < 7 && (
               <div className="bg-gray-800 rounded-2xl p-8 mb-8 border border-gray-700">
                 <StepIndicator 
                   current={phase} 
-                  total={6} 
+                  total={7} 
                   labels={phaseDescriptions.map(p => p.title.split(':')[1].trim())}
                 />
 
@@ -482,8 +488,143 @@
             )}
 
             {/* Post-Generation: Download Phase */}
-            {phase === 6 && (
+            {phase === 7 && (
               <div className="grid grid-cols-1 gap-8">
+                {/* Quality Evaluation Results */}
+                {generatedData.quality && (
+                  <div className="bg-gradient-to-br from-teal-900 to-cyan-900 rounded-2xl p-8 border-2 border-teal-500">
+                    <h3 className="text-2xl font-bold text-white mb-6 flex items-center gap-3">
+                      📊 Quality Evaluation Results
+                    </h3>
+
+                    {/* Final Score Card */}
+                    <div className="bg-gray-900 rounded-lg p-6 mb-6 border border-teal-400">
+                      <div className="flex items-center justify-between mb-4">
+                        <div>
+                          <h4 className="text-xl font-bold text-white">Final Score</h4>
+                          <p className="text-sm text-gray-400">Composite weighted evaluation</p>
+                        </div>
+                        <div className="text-right">
+                          <div className="text-4xl font-bold text-teal-300">
+                            {generatedData.quality.composite_score?.final_score?.toFixed(1) || '0.0'}<span className="text-2xl text-gray-400">/100</span>
+                          </div>
+                          <div className="text-2xl font-bold text-yellow-400 mt-1">
+                            Grade: {generatedData.quality.composite_score?.grade || 'N/A'}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="w-full bg-gray-800 rounded-full h-4 overflow-hidden">
+                        <div 
+                          className="h-full bg-gradient-to-r from-teal-500 to-cyan-500 transition-all duration-1000"
+                          style={{ width: `${generatedData.quality.composite_score?.final_score || 0}%` }}
+                        ></div>
+                      </div>
+                    </div>
+
+                    {/* Metrics Breakdown */}
+                    <div className="grid md:grid-cols-2 gap-4 mb-6">
+                      {/* Metric 1: Functional Completeness */}
+                      <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                        <div className="flex justify-between items-center mb-2">
+                          <h5 className="font-semibold text-white">⚙️ Functional Completeness</h5>
+                          <span className="text-lg font-bold text-purple-400">
+                            {generatedData.quality.metric_1_functional_completeness?.score || 0}/100
+                          </span>
+                        </div>
+                        <div className="w-full bg-gray-700 rounded-full h-2">
+                          <div className="h-full bg-purple-500 rounded-full" style={{ width: `${generatedData.quality.metric_1_functional_completeness?.score || 0}%` }}></div>
+                        </div>
+                        <p className="text-xs text-gray-400 mt-2">Weight: 25%</p>
+                      </div>
+
+                      {/* Metric 2: Variable Fidelity */}
+                      <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                        <div className="flex justify-between items-center mb-2">
+                          <h5 className="font-semibold text-white">📝 Variable Fidelity</h5>
+                          <span className="text-lg font-bold text-blue-400">
+                            {generatedData.quality.metric_2_variable_fidelity?.score || 0}/100
+                          </span>
+                        </div>
+                        <div className="w-full bg-gray-700 rounded-full h-2">
+                          <div className="h-full bg-blue-500 rounded-full" style={{ width: `${generatedData.quality.metric_2_variable_fidelity?.score || 0}%` }}></div>
+                        </div>
+                        <p className="text-xs text-gray-400 mt-2">Weight: 15%</p>
+                      </div>
+
+                      {/* Metric 3: State Machine */}
+                      <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                        <div className="flex justify-between items-center mb-2">
+                          <h5 className="font-semibold text-white">🔄 State Machine Correctness</h5>
+                          <span className="text-lg font-bold text-green-400">
+                            {generatedData.quality.metric_3_state_machine?.score || 0}/100
+                          </span>
+                        </div>
+                        <div className="w-full bg-gray-700 rounded-full h-2">
+                          <div className="h-full bg-green-500 rounded-full" style={{ width: `${generatedData.quality.metric_3_state_machine?.score || 0}%` }}></div>
+                        </div>
+                        <p className="text-xs text-gray-400 mt-2">Weight: 15%</p>
+                      </div>
+
+                      {/* Metric 4: Business Logic */}
+                      <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                        <div className="flex justify-between items-center mb-2">
+                          <h5 className="font-semibold text-white">💼 Business Logic Fidelity</h5>
+                          <span className="text-lg font-bold text-orange-400">
+                            {generatedData.quality.metric_4_business_logic?.score || 0}/100
+                          </span>
+                        </div>
+                        <div className="w-full bg-gray-700 rounded-full h-2">
+                          <div className="h-full bg-orange-500 rounded-full" style={{ width: `${generatedData.quality.metric_4_business_logic?.score || 0}%` }}></div>
+                        </div>
+                        <p className="text-xs text-gray-400 mt-2">Weight: 30% (Most Important)</p>
+                      </div>
+
+                      {/* Metric 5: Code Quality */}
+                      <div className="bg-gray-800 rounded-lg p-4 border border-gray-700 md:col-span-2">
+                        <div className="flex justify-between items-center mb-2">
+                          <h5 className="font-semibold text-white">✨ Code Quality</h5>
+                          <span className="text-lg font-bold text-teal-400">
+                            {generatedData.quality.metric_5_code_quality?.score || 0}/100
+                          </span>
+                        </div>
+                        <div className="w-full bg-gray-700 rounded-full h-2">
+                          <div className="h-full bg-teal-500 rounded-full" style={{ width: `${generatedData.quality.metric_5_code_quality?.score || 0}%` }}></div>
+                        </div>
+                        <p className="text-xs text-gray-400 mt-2">Weight: 35%</p>
+                      </div>
+                    </div>
+
+                    {/* Summary */}
+                    {generatedData.quality.summary && (
+                      <div className="grid md:grid-cols-2 gap-4">
+                        {/* Strengths */}
+                        {generatedData.quality.summary.strengths && generatedData.quality.summary.strengths.length > 0 && (
+                          <div className="bg-green-900/30 rounded-lg p-4 border border-green-600">
+                            <h5 className="font-semibold text-green-300 mb-2">✅ Strengths</h5>
+                            <ul className="text-sm text-gray-300 space-y-1">
+                              {generatedData.quality.summary.strengths.slice(0, 3).map((s, i) => (
+                                <li key={i}>• {s}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+
+                        {/* Weaknesses */}
+                        {generatedData.quality.summary.weaknesses && generatedData.quality.summary.weaknesses.length > 0 && (
+                          <div className="bg-red-900/30 rounded-lg p-4 border border-red-600">
+                            <h5 className="font-semibold text-red-300 mb-2">⚠️ Weaknesses</h5>
+                            <ul className="text-sm text-gray-300 space-y-1">
+                              {generatedData.quality.summary.weaknesses.slice(0, 3).map((w, i) => (
+                                <li key={i}>• {w}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {/* Generated Artifacts */}
                 <div className="space-y-6">
                   {/* Generated Outputs */}
@@ -494,7 +635,7 @@
 
                     <div className="space-y-4">
                       <p className="text-gray-300 mb-6">
-                        Your smart contract has been successfully generated! Download the files below for research, analysis, or manual deployment.
+                        Your smart contract has been successfully generated and evaluated! Download the files below for research, analysis, or manual deployment.
                       </p>
                       
                       <div className="bg-gray-900 rounded-lg p-4 border border-green-600 space-y-3">
@@ -503,7 +644,7 @@
                           <span>Translation Complete</span>
                         </div>
                         <p className="text-sm text-gray-400">
-                          All 6 phases finished successfully. Files are ready for download.
+                          All 7 phases finished successfully. Files are ready for download.
                         </p>
                       </div>
 
@@ -557,7 +698,7 @@
                 <h2 className="text-2xl font-bold text-white mb-6">📚 How It Works</h2>
                 <div className="grid md:grid-cols-2 gap-8">
                   <div>
-                    <h3 className="text-lg font-bold text-purple-400 mb-4">6-Phase Translation Process</h3>
+                    <h3 className="text-lg font-bold text-purple-400 mb-4">7-Phase Translation Process</h3>
                     <ol className="space-y-3 text-gray-300 text-sm">
                       <li><strong>Phase 1:</strong> Document Processing - Extract text from PDF</li>
                       <li><strong>Phase 2:</strong> Contract Analysis - Parse parties, terms, conditions</li>
@@ -565,17 +706,18 @@
                       <li><strong>Phase 4:</strong> Security Audit - Identify vulnerabilities</li>
                       <li><strong>Phase 5:</strong> ABI Generation - Create contract interface</li>
                       <li><strong>Phase 6:</strong> MCP Server - Generate FastMCP server</li>
+                      <li><strong>Phase 7:</strong> Quality Evaluation - Comprehensive quality metrics</li>
                     </ol>
                   </div>
                   <div>
                     <h3 className="text-lg font-bold text-cyan-400 mb-4">Research & Quality Evaluation</h3>
                     <ol className="space-y-3 text-gray-300 text-sm">
-                      <li>✅ <strong>Semantic Translation:</strong> 6-phase AI-powered pipeline</li>
+                      <li>✅ <strong>Semantic Translation:</strong> 7-phase AI-powered pipeline</li>
                       <li>✅ <strong>Security Analysis:</strong> Automated vulnerability detection</li>
                       <li>✅ <strong>Code Quality:</strong> Generate compilable Solidity contracts</li>
+                      <li>✅ <strong>Quality Metrics:</strong> 5-dimensional evaluation framework</li>
                       <li>✅ <strong>Schema Extraction:</strong> Parse natural language to structured data</li>
-                      <li>✅ <strong>ABI Generation:</strong> Extract contract interfaces</li>
-                      <li>✅ <strong>Download Artifacts:</strong> .sol, ABI, security reports, and MCP templates</li>
+                      <li>✅ <strong>Download Artifacts:</strong> .sol, ABI, security reports, quality evaluation</li>
                     </ol>
                   </div>
                 </div>

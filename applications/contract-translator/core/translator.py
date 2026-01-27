@@ -23,7 +23,8 @@ from .task_builders import (
     create_solidity_generator_task_description,
     create_audit_task_description,
     create_abi_generator_task_description,
-    create_mcp_task_description
+    create_mcp_task_description,
+    create_quality_evaluation_task_description
 )
 from .agents import (
     _convert_to_crew_llm,
@@ -93,6 +94,7 @@ class IBMAgenticContractTranslator:
         self.auditor_agent = agents['auditor_agent']
         self.abi_agent = agents['abi_agent']
         self.mcp_agent = agents['mcp_agent']
+        self.quality_evaluator_agent = agents['quality_evaluator_agent']
         
         # Store refiner agent if reinforcement is enabled
         if self.enable_reinforcement and 'refiner_agent' in agents:
@@ -529,7 +531,7 @@ class IBMAgenticContractTranslator:
             # NEW: Use Agent/Task/Crew orchestration with streaming yields
             
             # Phase 2: Contract Analysis (Parser Agent)
-            print("\n[Phase 2/6] Contract Analysis (Parser Agent)")
+            print("\n[Phase 2/7] Contract Analysis (Parser Agent)")
             task_desc = create_parser_task_description(contract_text)
             task = Task(description=task_desc, expected_output="JSON schema", agent=self.parser_agent)
             crew = Crew(agents=[self.parser_agent], tasks=[task], verbose=False)
@@ -623,7 +625,7 @@ class IBMAgenticContractTranslator:
             }
             
             # Phase 3: Solidity Generation (Generator Agent)
-            print("\n[Phase 3/6] Code Generation (Generator Agent)")
+            print("\n[Phase 3/7] Code Generation (Generator Agent)")
             task_desc = create_solidity_generator_task_description(schema)
             task = Task(description=task_desc, expected_output="Solidity code", agent=self.generator_agent)
             crew = Crew(agents=[self.generator_agent], tasks=[task], verbose=False)
@@ -650,7 +652,7 @@ class IBMAgenticContractTranslator:
             }
             
             # Phase 4: Security Audit (Auditor Agent)
-            print("\n[Phase 4/6] Security Analysis (Auditor Agent)")
+            print("\n[Phase 4/7] Security Analysis (Auditor Agent)")
             task_desc = create_audit_task_description(solidity_code)
             task = Task(description=task_desc, expected_output="Security audit JSON", agent=self.auditor_agent)
             crew = Crew(agents=[self.auditor_agent], tasks=[task], verbose=False)
@@ -672,6 +674,7 @@ class IBMAgenticContractTranslator:
             
             # ===== REINFORCEMENT LOOP: Refine if needed =====
             refinement_count = 0
+            print(f"🔍 Reinforcement loop check: enable={self.enable_reinforcement}, has_refiner={self.refiner_agent is not None}, max_iter={self.max_refinement_iterations}")
             while self.enable_reinforcement and self.refiner_agent and should_refine(audit_report, refinement_count, self.max_refinement_iterations):
                 refinement_count += 1
                 print(f"\n[Phase 4.{refinement_count}] Reinforcement: Refining contract (iteration {refinement_count}/{self.max_refinement_iterations})")
@@ -743,7 +746,7 @@ class IBMAgenticContractTranslator:
             }
             
             # Phase 5: ABI Generation (ABI Agent)
-            print("\n[Phase 5/6] Interface Generation (ABI Agent)")
+            print("\n[Phase 5/7] Interface Generation (ABI Agent)")
             task_desc = create_abi_generator_task_description(solidity_code)
             task = Task(description=task_desc, expected_output="ABI JSON array", agent=self.abi_agent)
             crew = Crew(agents=[self.abi_agent], tasks=[task], verbose=False)
@@ -771,7 +774,7 @@ class IBMAgenticContractTranslator:
             
             # Phase 6: MCP Server Generation (MCP Agent)
             if generate_mcp_server:
-                print("\n[Phase 6/6] MCP Server Generation (MCP Agent)")
+                print("\n[Phase 6/7] MCP Server Generation (MCP Agent)")
                 contract_name = "_".join([p.name.replace(' ', '_')[:10] for p in schema.parties[:2]]) if schema.parties else "Contract"
                 contract_name = contract_name[:40]
                 
@@ -791,7 +794,64 @@ class IBMAgenticContractTranslator:
                 
                 print(f"✓ Generated MCP server ({len(mcp_server_code.splitlines())} lines)")
             else:
-                print("\n[Phase 6/6] MCP Server Generation - SKIPPED")
+                print("\n[Phase 6/7] MCP Server Generation - SKIPPED")
+            
+            yield {
+                'phase': 6,
+                'status': 'complete',
+                'data': {
+                    'title': 'MCP Server Generation',
+                    'message': 'Generated MCP server' if generate_mcp_server else 'Skipped',
+                    'mcp_server': results.get('mcp_server', '')
+                }
+            }
+            
+            # Phase 7: Quality Evaluation (Quality Evaluator Agent)
+            print("\n[Phase 7/7] Quality Evaluation (Quality Evaluator Agent)")
+            contract_name = "_".join([p.name.replace(' ', '_')[:10] for p in schema.parties[:2]]) if schema.parties else "Contract"
+            contract_name = contract_name[:40]
+            
+            task_desc = create_quality_evaluation_task_description(solidity_code, schema, contract_name)
+            task = Task(description=task_desc, expected_output="Quality evaluation JSON", agent=self.quality_evaluator_agent)
+            crew = Crew(agents=[self.quality_evaluator_agent], tasks=[task], verbose=False)
+            
+            try:
+                result_raw = crew.kickoff()
+                result_text = str(result_raw.raw) if hasattr(result_raw, 'raw') else str(result_raw)
+                quality_evaluation = self._extract_json(result_text, dict)
+                results['quality_evaluation'] = quality_evaluation
+                
+                # Print summary
+                final_score = quality_evaluation.get('composite_score', {}).get('final_score', 0)
+                grade = quality_evaluation.get('composite_score', {}).get('grade', 'N/A')
+                print(f"✓ Quality Evaluation Complete: Score={final_score:.1f}/95, Grade={grade}")
+                
+                # Print metric breakdown
+                print(f"   📊 Functional Completeness: {quality_evaluation.get('metric_1_functional_completeness', {}).get('score', 0)}/100")
+                print(f"   📊 Variable Fidelity: {quality_evaluation.get('metric_2_variable_fidelity', {}).get('score', 0)}/100")
+                print(f"   📊 State Machine Correctness: {quality_evaluation.get('metric_3_state_machine', {}).get('score', 0)}/100")
+                print(f"   📊 Business Logic Fidelity: {quality_evaluation.get('metric_4_business_logic', {}).get('score', 0)}/100")
+                print(f"   📊 Code Quality: {quality_evaluation.get('metric_5_code_quality', {}).get('score', 0)}/100")
+                
+            except Exception as e:
+                print(f"   ⚠️  Quality evaluation failed: {e}")
+                import traceback
+                traceback.print_exc()
+                quality_evaluation = {
+                    "error": str(e),
+                    "composite_score": {"final_score": 0, "grade": "F"}
+                }
+                results['quality_evaluation'] = quality_evaluation
+            
+            yield {
+                'phase': 7,
+                'status': 'complete',
+                'data': {
+                    'title': 'Quality Evaluation',
+                    'message': f"Score: {quality_evaluation.get('composite_score', {}).get('final_score', 0):.1f}/95, Grade: {quality_evaluation.get('composite_score', {}).get('grade', 'N/A')}",
+                    'quality_evaluation': quality_evaluation
+                }
+            }
                 
         else:
             # Legacy: Use Program.forward() calls with streaming yields
@@ -890,7 +950,64 @@ class IBMAgenticContractTranslator:
                 results['mcp_server'] = mcp_server_code
                 print(f"✓ Generated MCP server ({len(mcp_server_code.splitlines())} lines)")
             else:
-                print("\n[Phase 6/6] MCP Server Generation - SKIPPED")
+                print("\n[Phase 6/7] MCP Server Generation - SKIPPED")
+            
+            yield {
+                'phase': 6,
+                'status': 'complete',
+                'data': {
+                    'title': 'MCP Server Generation',
+                    'message': 'Generated MCP server' if generate_mcp_server else 'Skipped',
+                    'mcp_server': results.get('mcp_server', '')
+                }
+            }
+            
+            # Phase 7: Quality Evaluation
+            print("\n[Phase 7/7] Quality Evaluation (Quality Evaluator Agent)")
+            contract_name = "_".join([p.name.replace(' ', '_')[:10] for p in schema.parties[:2]]) if schema.parties else "Contract"
+            contract_name = contract_name[:40]
+            
+            task_desc = create_quality_evaluation_task_description(solidity_code, schema, contract_name)
+            task = Task(description=task_desc, expected_output="Quality evaluation JSON", agent=self.quality_evaluator_agent)
+            crew = Crew(agents=[self.quality_evaluator_agent], tasks=[task], verbose=False)
+            
+            try:
+                result_raw = crew.kickoff()
+                result_text = str(result_raw.raw) if hasattr(result_raw, 'raw') else str(result_raw)
+                quality_evaluation = self._extract_json(result_text, dict)
+                results['quality_evaluation'] = quality_evaluation
+                
+                # Print summary
+                final_score = quality_evaluation.get('composite_score', {}).get('final_score', 0)
+                grade = quality_evaluation.get('composite_score', {}).get('grade', 'N/A')
+                print(f"✓ Quality Evaluation Complete: Score={final_score:.1f}/95, Grade={grade}")
+                
+                # Print metric breakdown
+                print(f"   Functional Completeness: {quality_evaluation.get('metric_1_functional_completeness', {}).get('score', 0)}/100")
+                print(f"   Variable Fidelity: {quality_evaluation.get('metric_2_variable_fidelity', {}).get('score', 0)}/100")
+                print(f"   State Machine Correctness: {quality_evaluation.get('metric_3_state_machine', {}).get('score', 0)}/100")
+                print(f"   Business Logic Fidelity: {quality_evaluation.get('metric_4_business_logic', {}).get('score', 0)}/100")
+                print(f"   Code Quality: {quality_evaluation.get('metric_5_code_quality', {}).get('score', 0)}/100")
+                
+            except Exception as e:
+                print(f"   ⚠️  Quality evaluation failed: {e}")
+                import traceback
+                traceback.print_exc()
+                quality_evaluation = {
+                    "error": str(e),
+                    "composite_score": {"final_score": 0, "grade": "F"}
+                }
+                results['quality_evaluation'] = quality_evaluation
+            
+            yield {
+                'phase': 7,
+                'status': 'complete',
+                'data': {
+                    'title': 'Quality Evaluation',
+                    'message': f"Score: {quality_evaluation.get('composite_score', {}).get('final_score', 0):.1f}/95, Grade: {quality_evaluation.get('composite_score', {}).get('grade', 'N/A')}",
+                    'quality_evaluation': quality_evaluation
+                }
+            }
         
         # Save all outputs (applies to both modes)
         self._save_outputs(results, output_dir, schema)
@@ -898,16 +1015,7 @@ class IBMAgenticContractTranslator:
         print("\n" + "="*70)
         print("✅ TRANSLATION COMPLETE")
         print("="*70)
-        
-        yield {
-            'phase': 6,
-            'status': 'complete',
-            'data': {
-                'title': 'MCP Server Generation',
-                'message': f'Generated MCP server',
-                'mcp_server': results.get('mcp_server', '')
-            }
-        }
+
     
     def translate_contract(
         self, 
@@ -1058,6 +1166,12 @@ class IBMAgenticContractTranslator:
         with open(subdir_path / "security_audit.json", 'w', encoding='utf-8') as f:
             json.dump(results['audit'], f, indent=2)
         print(f"   ✓ security_audit.json")
+        
+        # Save quality evaluation
+        if 'quality_evaluation' in results:
+            with open(subdir_path / "quality_evaluation.json", 'w', encoding='utf-8') as f:
+                json.dump(results['quality_evaluation'], f, indent=2)
+            print(f"   ✓ quality_evaluation.json")
         
         # Save MCP Server
         if 'mcp_server' in results:

@@ -395,8 +395,8 @@ def translate_stream():
                 translator = ContractTranslator()
                 print("✓ Translator initialized")
                 
-                # Run the streaming 6-phase pipeline
-                print("📋 Starting 6-phase translation pipeline...")
+                # Run the streaming 7-phase pipeline
+                print("📋 Starting 7-phase translation pipeline...")
                 
                 # Set output directory to contract-translator/output
                 output_directory = str(contract_translator_path / "output")

@@ -16,6 +16,7 @@ import json
 from typing import Dict, List
 from agentics import LLM, Program, user_message, system_message
 from .schemas import UniversalContractSchema
+from .task_builders import create_solidity_generation_prompt
 
 
 # Note: This file is auto-generated from agentic_implementation.py refactoring
@@ -197,224 +198,25 @@ class UniversalSolidityGeneratorProgram(Program):
     """Generates Solidity for ANY contract type"""
     
     def forward(self, schema: UniversalContractSchema, lm: LLM) -> str:
-        """Generate contract-type-specific Solidity"""
- 
-        # Extract specific function names, variables, states from the parsed schema
-        conditions = schema.conditions if schema.conditions else {}
-        function_names = conditions.get('function_names', [])
-        variable_names = conditions.get('variable_names', [])
-        state_names = conditions.get('state_names', [])
-        state_transitions = conditions.get('state_transitions', [])
-        events = conditions.get('events', [])
-        logic_conditions = conditions.get('logic_conditions', [])
+        """Generate contract-type-specific Solidity using task_builders prompt"""
+        
+        # Use the comprehensive prompt from task_builders.py
+        prompt = create_solidity_generation_prompt(schema)
         
         messages = [
             system_message(
-                f"""You are a Solidity expert who generates COMPLETE, FUNCTIONAL smart contracts.
+                """You are a Solidity expert who generates COMPLETE, FUNCTIONAL smart contracts.
                 
-                CRITICAL GENERATION RULES - STRICT COMPLIANCE REQUIRED:
+                Follow ALL instructions in the prompt carefully, including:
+                - Complete Phase 1 semantic analysis before writing code
+                - Follow all 12 critical generation rules
+                - Avoid all forbidden patterns
+                - Follow correct implementation patterns
+                - Complete all checklist items before finalizing
                 
-                1. SEMANTIC FIDELITY OVER NAME MATCHING
-                   - Never generate functions without FULL implementation
-                   - No placeholder logic, no "// logic goes here" comments
-                   - Every function mentioned must have complete, executable behavior
-                
-                2. EXPLICIT STATE MACHINE ENFORCEMENT
-                   - All states must be reachable and mutually exclusive
-                   - State transitions use require() with clear error messages
-                   - Never allow invalid state transitions
-                   - Every state-dependent function must enforce valid state with require()
-                
-                3. ACCESS CONTROL MUST BE ENFORCED
-                   - All administrative functions use modifiers (onlyOwner, onlyRole, etc)
-                   - No state-changing function callable by arbitrary addresses unless specified
-                   - Define and use access roles consistently
-                
-                4. NO SILENT FAILURES - PROHIBITED PATTERN
-                   - NEVER use: if (condition) return;
-                   - ALWAYS use: require(condition, "Error message");
-                   - All invalid conditions MUST revert with descriptive messages
-                
-                5. ECONOMIC LOGIC MUST BE COMPLETE
-                   - If pricing/fees/swaps/payments mentioned: implement ALL calculations
-                   - Funds MUST be transferred or accounted for
-                   - Variables like price, feeRate, amountRaised MUST be read and written in live logic
-                   - No passive declarations - every financial variable must affect behavior
-                
-                6. TIME-BASED CONDITIONS MUST BE ENFORCED
-                   - If deadlines/start times/durations mentioned: store AND check using block.timestamp
-                   - Time variables MUST affect contract behavior
-                   - Implement automatic state transitions based on time
-                
-                7. EVENT SEMANTICS MUST MATCH ACTIONS
-                   - Events represent real, completed actions only
-                   - Each state change or economic transfer emits separate, specific event
-                   - Never merge unrelated actions into single event (e.g., no "TransferAndApproval")
-                   - Event names must be clear: Transfer, Approval, Swap, Paused, etc
-                
-                8. NO UNUSED OR DECORATIVE CODE
-                   - Every variable, state, function, event MUST be actively used
-                   - If something cannot be implemented: either infer reasonable behavior or omit it
-                   - No "filler" code
-                
-                9. STANDARD SOLIDITY SAFETY - MANDATORY
-                   - Use require() for all validation
-                   - Validate zero addresses
-                   - Ensure invariants (e.g., total supply consistency)
-                   - Use SafeMath patterns where needed
-                
-                10. INTERNAL COHERENCE REQUIRED
-                    - Names must reflect actual behavior
-                    - States correspond to real operational modes
-                    - Functions must not contradict each other
-                    - Variables must not represent multiple concepts
-                
-                FORBIDDEN PATTERNS:
-                - Empty function bodies
-                - Unused state variables
-                - Silent failures (if/return pattern)
-                - Placeholder comments
-                - Decorative events that don't represent real actions
-                - State variables that are never read
-                - Time variables that are never checked
-                - Access-controlled functions without modifiers
-                
-                YOUR GOAL: Generate production-ready, complete, semantically accurate Solidity code."""
+                Return ONLY complete, production-ready Solidity code with NO placeholders."""
             ),
-            user_message(
-                f"""Generate a COMPLETE, FUNCTIONAL Solidity ^0.8.0 smart contract that FULLY implements this specification.
-
-CONTRACT ANALYSIS:
-{schema.model_dump_json(indent=2)}
-
-SPECIFIC REQUIREMENTS TO IMPLEMENT:
-
-**EXACT Function Names to Implement (WITH FULL LOGIC):**
-{chr(10).join(f"- {fn} (must be fully functional, not a stub)" for fn in function_names) if function_names else "- Extract function names from the obligations and implement them completely"}
-
-**EXACT Variable Names to Use (MUST BE ACTIVELY USED IN LOGIC):**
-{chr(10).join(f"- {vn} (must be read/written in functions, not decorative)" for vn in variable_names) if variable_names else "- Extract variable names from financial terms and dates"}
-
-**EXACT State Names (MUST ALL BE REACHABLE WITH TRANSITIONS):**
-{chr(10).join(f"- {sn} (implement transition logic TO and FROM this state)" for sn in state_names) if state_names else "- Determine if contract needs states based on transitions"}
-
-**EXACT State Transitions (IMPLEMENT WITH require() CHECKS):**
-{chr(10).join(f"- {st} (use require() to enforce this transition)" for st in state_transitions) if state_transitions else "- Implement any state changes mentioned in obligations"}
-
-**EXACT Event Names (EMIT ON REAL ACTIONS ONLY):**
-{chr(10).join(f"- {ev} (emit when the actual action completes)" for ev in events) if events else "- Create events based on function names (e.g., FunctionNameExecuted)"}
-
-**EXACT Logic Conditions (IMPLEMENT WITH require() AND CALCULATIONS):**
-{chr(10).join(f"- {lc} (enforce this condition in code)" for lc in logic_conditions) if logic_conditions else "- Implement conditions from obligations and special_terms"}
-
-PARTIES TO HANDLE:
-{chr(10).join(f"- {p.name} ({p.role}) - store as state variable with proper type" for p in schema.parties)}
-
-FINANCIAL TERMS TO IMPLEMENT COMPLETELY:
-{chr(10).join(f"- {t.purpose}: {t.amount} {t.currency} ({t.frequency if t.frequency else 'one-time'}) - implement full payment/transfer logic" for t in schema.financial_terms)}
-
-OBLIGATIONS TO IMPLEMENT AS COMPLETE FUNCTIONS:
-{chr(10).join(f"- {o.party} must: {o.description} (deadline: {o.deadline if o.deadline else 'none'}) - implement full logic with checks" for o in schema.obligations)}
-
-MANDATORY IMPLEMENTATION CHECKLIST:
-□ All functions have COMPLETE implementation (no "// TODO" or empty bodies)
-□ All financial variables (price, fee, amount) are USED in calculations
-□ All time variables (deadline, startTime) are CHECKED with block.timestamp
-□ All state transitions use require() to prevent invalid changes
-□ All administrative functions have access control modifiers
-□ All economic transfers actually move funds (msg.value, transfer calls)
-□ All events are emitted when their corresponding action completes
-□ No silent failures - all invalid conditions revert with require()
-□ All declared variables are read or written in at least one function
-□ State machine is complete - all states are reachable and have transitions
-
-STRUCTURE YOUR CONTRACT:
-```solidity
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.0;
-
-contract [ContractName] {{
-    // === STATE ENUM (if states mentioned) ===
-    enum State {{ {', '.join(state_names) if state_names else 'Active, Completed, Terminated'} }}
-    State public currentState;
-    
-    // === ACCESS CONTROL ===
-    address public owner;
-    // Add role-based addresses for each party
-    
-    modifier onlyOwner() {{
-        require(msg.sender == owner, "Not authorized");
-        _;
-    }}
-    
-    modifier inState(State _state) {{
-        require(currentState == _state, "Invalid state for this action");
-        _;
-    }}
-    
-    // === STATE VARIABLES (using EXACT names) ===
-    // Declare all variables mentioned in contract
-    // CRITICAL: Every variable MUST be used in at least one function
-    
-    // === EVENTS (using EXACT names, separate events for different actions) ===
-    // One event per action type, never merge unrelated actions
-    
-    // === CONSTRUCTOR ===
-    constructor(...) {{
-        owner = msg.sender;
-        // Initialize all state variables
-        // Set initial state
-        currentState = State.[InitialState];
-    }}
-    
-    // === MAIN FUNCTIONS (using EXACT names with FULL implementation) ===
-    // Implement complete logic for each function:
-    // - Access control (modifiers)
-    // - State checks (require currentState)
-    // - Validation (require conditions)
-    // - State updates
-    // - Fund transfers (if applicable)
-    // - Event emissions
-    // - State transitions (if applicable)
-    
-    // === VIEW FUNCTIONS (getters for all state variables) ===
-    // Provide read access to all state
-    
-    // === INTERNAL HELPER FUNCTIONS (if needed) ===
-    // Extract complex logic into private functions
-}}
-```
-
-EXAMPLE OF COMPLETE vs INCOMPLETE:
-
-❌ INCOMPLETE (forbidden):
-```solidity
-function swapTokensForEth(uint256 amount) external {{
-    require(swappingEnabled, "Swap disabled");
-    // Logic goes here
-}}
-```
-
-✅ COMPLETE (required):
-```solidity
-function swapTokensForEth(uint256 amount) external {{
-    require(swappingEnabled, "Swap disabled");
-    require(balances[msg.sender] >= amount, "Insufficient balance");
-    require(address(this).balance >= amount * ethPrice, "Insufficient ETH");
-    
-    balances[msg.sender] -= amount;
-    totalSupply -= amount;
-    
-    uint256 ethAmount = amount * ethPrice;
-    (bool success, ) = msg.sender.call{{value: ethAmount}}("");
-    require(success, "ETH transfer failed");
-    
-    emit TokensSwapped(msg.sender, amount, ethAmount);
-}}
-```
-
-Return ONLY complete, production-ready Solidity code with ALL logic fully implemented."""
-            )
+            user_message(prompt)
         ]
         
         response = lm.chat(messages=messages)

@@ -33,6 +33,7 @@ from .task_builders import (
     create_solidity_generator_task_description,
     create_audit_task_description,
     create_abi_generator_task_description,
+    create_quality_evaluation_task_description,
 )
 
 from .agents import (
@@ -66,6 +67,7 @@ __all__ = [
     'create_solidity_generator_task_description',
     'create_audit_task_description',
     'create_abi_generator_task_description',
+    'create_quality_evaluation_task_description',
     # Agent utilities
     'create_agents',
     'should_refine',

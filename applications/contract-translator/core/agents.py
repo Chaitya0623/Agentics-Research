@@ -19,7 +19,7 @@ from crewai import Agent, LLM as CrewLLM
 
 
 # Default maximum refinement iterations for the reinforcement loop
-DEFAULT_MAX_REFINEMENT_ITERATIONS = 2
+DEFAULT_MAX_REFINEMENT_ITERATIONS = 1
 
 
 def _convert_to_crew_llm(agentics_llm) -> CrewLLM:
@@ -75,7 +75,8 @@ def create_agents(crew_llm: CrewLLM, enable_reinforcement: bool = True) -> dict:
             "You are a Solidity expert who generates COMPLETE, FUNCTIONAL smart contracts. "
             "You implement every function with full logic, use require() for validation, "
             "implement proper access control, and ensure all variables are actively used. "
-            "You never write placeholder code or empty functions."
+            "You never write placeholder code or empty functions." 
+            "Identify the core invariants implied by the specification (e.g., conservation of funds, supply limits, exclusivity of states, fairness between parties) and ensure they cannot be violated by calling functions in any order or combination."
         ),
         llm=crew_llm,
         verbose=False,
@@ -124,12 +125,30 @@ def create_agents(crew_llm: CrewLLM, enable_reinforcement: bool = True) -> dict:
         allow_delegation=False
     )
     
+    # Phase 7: Quality Evaluator Agent
+    quality_evaluator_agent = Agent(
+        role="Smart Contract Quality Analyst",
+        goal="Comprehensively evaluate generated smart contracts against natural language specifications",
+        backstory=(
+            "You are an expert smart contract quality analyst specializing in evaluating how well "
+            "generated Solidity code implements natural language contract specifications. "
+            "You systematically assess functional completeness, variable fidelity, state machine correctness, "
+            "business logic implementation, and code quality. You provide detailed scoring with specific "
+            "evidence from the code and specification, identifying what was implemented correctly and what is missing. "
+            "You are thorough, objective, and provide actionable feedback with exact line references."
+        ),
+        llm=crew_llm,
+        verbose=False,
+        allow_delegation=False
+    )
+    
     agents = {
         'parser_agent': parser_agent,
         'generator_agent': generator_agent,
         'auditor_agent': auditor_agent,
         'abi_agent': abi_agent,
         'mcp_agent': mcp_agent,
+        'quality_evaluator_agent': quality_evaluator_agent,
     }
     
     # Add Refiner Agent for reinforcement loop if enabled
@@ -143,7 +162,7 @@ def create_agents(crew_llm: CrewLLM, enable_reinforcement: bool = True) -> dict:
                 "to address every vulnerability while maintaining the original functionality. "
                 "You follow the Checks-Effects-Interactions pattern, add reentrancy guards where needed, "
                 "implement proper access control, validate all inputs with require(), "
-                "and ensure no silent failures. You return ONLY the fixed Solidity code."
+                "and ensure no silent failures. You return ONLY the fixed Solidity code."\
             ),
             llm=crew_llm,
             verbose=False,
@@ -171,15 +190,20 @@ def should_refine(audit_report: Dict[str, Any], refinement_count: int, max_itera
         True if refinement should be performed, False otherwise
     """
     if refinement_count >= max_iterations:
+        print(f"🔄 Refinement check: Max iterations reached ({refinement_count}/{max_iterations})")
         return False
     
     severity = audit_report.get('severity_level', 'unknown').lower()
     approved = audit_report.get('approved', False)
     
+    print(f"🔄 Refinement check: severity={severity}, approved={approved}, iteration={refinement_count}/{max_iterations}")
+    
     # Refine if not approved and severity is medium or higher
     if not approved and severity in ['medium', 'high', 'critical']:
+        print(f"✓ Triggering refinement loop (severity={severity}, approved={approved})")
         return True
     
+    print(f"⏭️  Skipping refinement (severity={severity}, approved={approved})")
     return False
 
 
