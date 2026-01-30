@@ -1312,7 +1312,14 @@ def create_quality_evaluation_task_description(solidity_code: str, schema, contr
     Create task description for the Quality Evaluator Agent.
     Performs comprehensive multi-metric evaluation of generated contract quality.
     """
-    conditions = schema.conditions if schema.conditions else {}
+    # Handle both Pydantic models and dictionaries
+    if isinstance(schema, dict):
+        conditions = schema.get('conditions', {})
+        schema_dict = schema
+    else:
+        conditions = schema.conditions if hasattr(schema, 'conditions') and schema.conditions else {}
+        schema_dict = schema.model_dump() if hasattr(schema, 'model_dump') else schema.dict()
+    
     function_names = conditions.get('function_names', [])
     variable_names = conditions.get('variable_names', [])
     state_names = conditions.get('state_names', [])
@@ -1321,7 +1328,6 @@ def create_quality_evaluation_task_description(solidity_code: str, schema, contr
     logic_conditions = conditions.get('logic_conditions', [])
     
     import json
-    schema_dict = schema.model_dump() if hasattr(schema, 'model_dump') else schema.dict()
     
     return f"""Perform a comprehensive quality evaluation of this generated Solidity smart contract against the original natural language specification.
 

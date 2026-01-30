@@ -47,3 +47,4 @@ profile*.svg
 applications/requirement_fsm_code.jsonl
 applications/comment_code.jsonl
 applications/contract-translator/output
+applications/contract-translator/compilation_output/

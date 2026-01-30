@@ -80,19 +80,26 @@
       const [showAuditModal, setShowAuditModal] = useState(false);
       const [auditData, setAuditData] = useState(null);
       const [currentSessionId, setCurrentSessionId] = useState(null);
+      const [groundTruthCode, setGroundTruthCode] = useState('');
 
       // Load contract from localStorage if available (from sampler.html)
       useEffect(() => {
         const savedText = localStorage.getItem('contract_text');
         const savedType = localStorage.getItem('contract_type');
+        const savedGroundTruth = localStorage.getItem('ground_truth_code');
         if (savedText) {
           setContractText(savedText);
           if (savedType) {
             setContractType(savedType);
           }
+          if (savedGroundTruth) {
+            setGroundTruthCode(savedGroundTruth);
+            console.log('✓ Loaded ground truth code for comparison');
+          }
           // Clear from localStorage after loading
           localStorage.removeItem('contract_text');
           localStorage.removeItem('contract_type');
+          localStorage.removeItem('ground_truth_code');
           console.log('✓ Loaded contract from sampler');
         }
       }, []);
@@ -133,6 +140,13 @@
           const formData = new FormData();
           formData.append('contract_text', contractText);
           formData.append('contract_type', contractType);
+          
+          // Add ground truth code if available
+          if (groundTruthCode && groundTruthCode.trim()) {
+            formData.append('ground_truth_code', groundTruthCode);
+            console.log('📊 Including ground truth code for comparison');
+          }
+          
           console.log('🔵 Starting real-time SSE stream to /api/translate-stream');
           console.log('   Contract text length:', contractText.length);
           
@@ -253,6 +267,24 @@
                   if (eventData.data.quality_evaluation) {
                     setGeneratedData(prev => ({ ...prev, quality: eventData.data.quality_evaluation }));
                     console.log('✅ Quality evaluation stored');
+                  }
+                  
+                  // Handle ground truth comparison event
+                  if (eventData.phase === 'ground_truth' && eventData.data) {
+                    console.log('📊 Ground truth event received:', eventData.data);
+                    console.log('  - Metrics:', eventData.data.metrics);
+                    console.log('  - Current phase before update:', phase);
+                    setGeneratedData(prev => ({ 
+                      ...prev, 
+                      groundTruthComparison: eventData.data 
+                    }));
+                    console.log('✅ Ground truth comparison:', {
+                      generated: eventData.data.generated_score,
+                      groundTruth: eventData.data.ground_truth_score,
+                      delta: eventData.data.score_delta,
+                      result: eventData.data.comparison.result
+                    });
+                    console.log('  - Current phase after update:', phase);
                   }
 
                 } catch (e) {
@@ -624,7 +656,210 @@
                     )}
                   </div>
                 )}
+              </div>
+            )}
 
+            {/* Ground Truth Comparison - Independent Section */}
+            {generatedData.groundTruthComparison && generatedData.groundTruthComparison.metrics && (
+              <div className="bg-gradient-to-br from-indigo-900 to-purple-900 rounded-2xl p-8 border-2 border-indigo-500 mt-6">
+                <h3 className="text-2xl font-bold text-white mb-6 flex items-center gap-3">
+                  🔬 Ground Truth Comparison
+                </h3>
+
+                {/* Summary Cards */}
+                <div className="grid md:grid-cols-3 gap-4 mb-6">
+                  <div className="bg-gray-800 rounded-lg p-4 border border-blue-500">
+                    <h5 className="font-semibold text-blue-300 mb-2">🤖 Generated Code</h5>
+                    <div className="text-3xl font-bold text-blue-400">
+                      {(generatedData.groundTruthComparison.generated_score || 0).toFixed(1)}<span className="text-xl text-gray-400">/100</span>
+                    </div>
+                  </div>
+                  <div className="bg-gray-800 rounded-lg p-4 border border-green-500">
+                    <h5 className="font-semibold text-green-300 mb-2">✅ Ground Truth Code</h5>
+                    <div className="text-3xl font-bold text-green-400">
+                      {(generatedData.groundTruthComparison.ground_truth_score || 0).toFixed(1)}<span className="text-xl text-gray-400">/100</span>
+                    </div>
+                  </div>
+                  <div className="bg-gray-800 rounded-lg p-4 border border-purple-500">
+                    <h5 className="font-semibold text-purple-300 mb-2">📊 Difference</h5>
+                    <div className={`text-3xl font-bold ${(generatedData.groundTruthComparison.score_delta || 0) >= 0 ? 'text-green-400' : 'text-orange-400'}`}>
+                      {(generatedData.groundTruthComparison.score_delta || 0) >= 0 ? '+' : ''}{(generatedData.groundTruthComparison.score_delta || 0).toFixed(1)}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Metric Comparison */}
+                <div className="space-y-3">
+                  <h4 className="text-lg font-bold text-white mb-3">📈 Detailed Breakdown</h4>
+                  
+                  {/* Functional Completeness */}
+                  <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-white font-medium">⚙️ Functional Completeness</span>
+                      <span className="text-sm text-gray-400">Weight: 25%</span>
+                    </div>
+                    <div className="flex items-center gap-4">
+                      <div className="flex-1">
+                        <div className="text-xs text-blue-300 mb-1">Generated: {(generatedData.quality?.metric_1_functional_completeness?.score || 0).toFixed(1)}</div>
+                        <div className="w-full bg-gray-700 rounded-full h-2">
+                          <div className="bg-blue-500 h-2 rounded-full" style={{width: `${generatedData.quality?.metric_1_functional_completeness?.score || 0}%`}}></div>
+                        </div>
+                      </div>
+                      <div className="flex-1">
+                        <div className="text-xs text-green-300 mb-1">Ground Truth: {(generatedData.groundTruthComparison.metrics.functional_completeness || 0).toFixed(1)}</div>
+                        <div className="w-full bg-gray-700 rounded-full h-2">
+                          <div className="bg-green-500 h-2 rounded-full" style={{width: `${generatedData.groundTruthComparison.metrics.functional_completeness || 0}%`}}></div>
+                        </div>
+                      </div>
+                      <div className={`text-sm font-semibold ${((generatedData.quality?.metric_1_functional_completeness?.score || 0) - (generatedData.groundTruthComparison.metrics.functional_completeness || 0)) >= 0 ? 'text-green-400' : 'text-orange-400'}`}>
+                        {((generatedData.quality?.metric_1_functional_completeness?.score || 0) - (generatedData.groundTruthComparison.metrics.functional_completeness || 0)) >= 0 ? '+' : ''}{((generatedData.quality?.metric_1_functional_completeness?.score || 0) - (generatedData.groundTruthComparison.metrics.functional_completeness || 0)).toFixed(1)}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Variable Fidelity */}
+                  <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-white font-medium">🔤 Variable Fidelity</span>
+                      <span className="text-sm text-gray-400">Weight: 15%</span>
+                    </div>
+                    <div className="flex items-center gap-4">
+                      <div className="flex-1">
+                        <div className="text-xs text-blue-300 mb-1">Generated: {(generatedData.quality?.metric_2_variable_fidelity?.score || 0).toFixed(1)}</div>
+                        <div className="w-full bg-gray-700 rounded-full h-2">
+                          <div className="bg-blue-500 h-2 rounded-full" style={{width: `${generatedData.quality?.metric_2_variable_fidelity?.score || 0}%`}}></div>
+                        </div>
+                      </div>
+                      <div className="flex-1">
+                        <div className="text-xs text-green-300 mb-1">Ground Truth: {(generatedData.groundTruthComparison.metrics.variable_fidelity || 0).toFixed(1)}</div>
+                        <div className="w-full bg-gray-700 rounded-full h-2">
+                          <div className="bg-green-500 h-2 rounded-full" style={{width: `${generatedData.groundTruthComparison.metrics.variable_fidelity || 0}%`}}></div>
+                        </div>
+                      </div>
+                      <div className={`text-sm font-semibold ${((generatedData.quality?.metric_2_variable_fidelity?.score || 0) - (generatedData.groundTruthComparison.metrics.variable_fidelity || 0)) >= 0 ? 'text-green-400' : 'text-orange-400'}`}>
+                        {((generatedData.quality?.metric_2_variable_fidelity?.score || 0) - (generatedData.groundTruthComparison.metrics.variable_fidelity || 0)) >= 0 ? '+' : ''}{((generatedData.quality?.metric_2_variable_fidelity?.score || 0) - (generatedData.groundTruthComparison.metrics.variable_fidelity || 0)).toFixed(1)}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* State Machine Modeling */}
+                  <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-white font-medium">🔄 State Machine Modeling</span>
+                      <span className="text-sm text-gray-400">Weight: 15%</span>
+                    </div>
+                    <div className="flex items-center gap-4">
+                      <div className="flex-1">
+                        <div className="text-xs text-blue-300 mb-1">Generated: {(generatedData.quality?.metric_3_state_machine?.score || 0).toFixed(1)}</div>
+                        <div className="w-full bg-gray-700 rounded-full h-2">
+                          <div className="bg-blue-500 h-2 rounded-full" style={{width: `${generatedData.quality?.metric_3_state_machine?.score || 0}%`}}></div>
+                        </div>
+                      </div>
+                      <div className="flex-1">
+                        <div className="text-xs text-green-300 mb-1">Ground Truth: {(generatedData.groundTruthComparison.metrics.state_machine || 0).toFixed(1)}</div>
+                        <div className="w-full bg-gray-700 rounded-full h-2">
+                          <div className="bg-green-500 h-2 rounded-full" style={{width: `${generatedData.groundTruthComparison.metrics.state_machine || 0}%`}}></div>
+                        </div>
+                      </div>
+                      <div className={`text-sm font-semibold ${((generatedData.quality?.metric_3_state_machine?.score || 0) - (generatedData.groundTruthComparison.metrics.state_machine || 0)) >= 0 ? 'text-green-400' : 'text-orange-400'}`}>
+                        {((generatedData.quality?.metric_3_state_machine?.score || 0) - (generatedData.groundTruthComparison.metrics.state_machine || 0)) >= 0 ? '+' : ''}{((generatedData.quality?.metric_3_state_machine?.score || 0) - (generatedData.groundTruthComparison.metrics.state_machine || 0)).toFixed(1)}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Business Logic */}
+                  <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-white font-medium">💼 Business Logic</span>
+                      <span className="text-sm text-gray-400">Weight: 35%</span>
+                    </div>
+                    <div className="flex items-center gap-4">
+                      <div className="flex-1">
+                        <div className="text-xs text-blue-300 mb-1">Generated: {(generatedData.quality?.metric_4_business_logic?.score || 0).toFixed(1)}</div>
+                        <div className="w-full bg-gray-700 rounded-full h-2">
+                          <div className="bg-blue-500 h-2 rounded-full" style={{width: `${generatedData.quality?.metric_4_business_logic?.score || 0}%`}}></div>
+                        </div>
+                      </div>
+                      <div className="flex-1">
+                        <div className="text-xs text-green-300 mb-1">Ground Truth: {(generatedData.groundTruthComparison.metrics.business_logic || 0).toFixed(1)}</div>
+                        <div className="w-full bg-gray-700 rounded-full h-2">
+                          <div className="bg-green-500 h-2 rounded-full" style={{width: `${generatedData.groundTruthComparison.metrics.business_logic || 0}%`}}></div>
+                        </div>
+                      </div>
+                      <div className={`text-sm font-semibold ${((generatedData.quality?.metric_4_business_logic?.score || 0) - (generatedData.groundTruthComparison.metrics.business_logic || 0)) >= 0 ? 'text-green-400' : 'text-orange-400'}`}>
+                        {((generatedData.quality?.metric_4_business_logic?.score || 0) - (generatedData.groundTruthComparison.metrics.business_logic || 0)) >= 0 ? '+' : ''}{((generatedData.quality?.metric_4_business_logic?.score || 0) - (generatedData.groundTruthComparison.metrics.business_logic || 0)).toFixed(1)}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Code Quality */}
+                  <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-white font-medium">✨ Code Quality</span>
+                      <span className="text-sm text-gray-400">Weight: 10%</span>
+                    </div>
+                    <div className="flex items-center gap-4">
+                      <div className="flex-1">
+                        <div className="text-xs text-blue-300 mb-1">Generated: {(generatedData.quality?.metric_5_code_quality?.score || 0).toFixed(1)}</div>
+                        <div className="w-full bg-gray-700 rounded-full h-2">
+                          <div className="bg-blue-500 h-2 rounded-full" style={{width: `${generatedData.quality?.metric_5_code_quality?.score || 0}%`}}></div>
+                        </div>
+                      </div>
+                      <div className="flex-1">
+                        <div className="text-xs text-green-300 mb-1">Ground Truth: {(generatedData.groundTruthComparison.metrics.code_quality || 0).toFixed(1)}</div>
+                        <div className="w-full bg-gray-700 rounded-full h-2">
+                          <div className="bg-green-500 h-2 rounded-full" style={{width: `${generatedData.groundTruthComparison.metrics.code_quality || 0}%`}}></div>
+                        </div>
+                      </div>
+                      <div className={`text-sm font-semibold ${((generatedData.quality?.metric_5_code_quality?.score || 0) - (generatedData.groundTruthComparison.metrics.code_quality || 0)) >= 0 ? 'text-green-400' : 'text-orange-400'}`}>
+                        {((generatedData.quality?.metric_5_code_quality?.score || 0) - (generatedData.groundTruthComparison.metrics.code_quality || 0)) >= 0 ? '+' : ''}{((generatedData.quality?.metric_5_code_quality?.score || 0) - (generatedData.groundTruthComparison.metrics.code_quality || 0)).toFixed(1)}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Legend */}
+                <div className="mt-6 pt-4 border-t border-gray-700">
+                  <div className="flex items-center gap-6 text-sm">
+                    <div className="flex items-center gap-2">
+                      <div className="w-3 h-3 bg-blue-500 rounded"></div>
+                      <span className="text-gray-300">Generated Code</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="w-3 h-3 bg-green-500 rounded"></div>
+                      <span className="text-gray-300">Ground Truth</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-green-400 font-semibold">+</span>
+                      <span className="text-gray-300">Generated scored higher</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-orange-400 font-semibold">-</span>
+                      <span className="text-gray-300">Ground truth scored higher</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Overall Summary */}
+                <div className={`rounded-lg p-4 border mt-6 ${(generatedData.groundTruthComparison.score_delta || 0) >= 0 ? 'bg-green-900/30 border-green-600' : 'bg-orange-900/30 border-orange-600'}`}>
+                  <div className="flex items-center gap-2">
+                    <span className="text-2xl">{(generatedData.groundTruthComparison.score_delta || 0) >= 0 ? '🎉' : '📈'}</span>
+                    <div>
+                      <h5 className={`font-semibold ${(generatedData.groundTruthComparison.score_delta || 0) >= 0 ? 'text-green-300' : 'text-orange-300'}`}>
+                        {(generatedData.groundTruthComparison.score_delta || 0) >= 0 ? 'Generated code scored higher!' : 'Ground truth scored higher'}
+                      </h5>
+                      <p className="text-sm text-gray-300">
+                        Overall score difference: {Math.abs(generatedData.groundTruthComparison.score_delta || 0).toFixed(1)} points
+                        {(generatedData.groundTruthComparison.score_delta || 0) >= 0 ? ' in favor of generated code' : ' in favor of ground truth'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {phase === 7 && (
+              <div>
                 {/* Generated Artifacts */}
                 <div className="space-y-6">
                   {/* Generated Outputs */}

@@ -26,6 +26,7 @@ from .task_builders import (
     create_mcp_task_description,
     create_quality_evaluation_task_description
 )
+from .solidity_compiler import SolidityCompilationChecker
 from .agents import (
     _convert_to_crew_llm,
     create_agents,
@@ -169,28 +170,52 @@ class IBMAgenticContractTranslator:
             if json_start < len(text):
                 text = text[json_start:]
         
-        # Parse JSON
-        try:
-            parsed = json.loads(text)
-            
-            # If expected_type is a Pydantic model, validate
-            if hasattr(expected_type, 'model_validate'):
-                return expected_type.model_validate(parsed)
-            # Otherwise return the parsed dict/list
-            return parsed
-            
-        except json.JSONDecodeError as e:
-            print(f"   ⚠️  JSON parsing failed: {e}")
-            # Try to fix common issues
-            # Remove trailing commas
-            text = re.sub(r',(\s*[}\]])', r'\1', text)
+        # Parse JSON with multiple fallback strategies
+        for attempt in range(3):
             try:
                 parsed = json.loads(text)
+                
+                # If expected_type is a Pydantic model, validate
                 if hasattr(expected_type, 'model_validate'):
                     return expected_type.model_validate(parsed)
+                # Otherwise return the parsed dict/list
                 return parsed
-            except:
-                raise ValueError(f"Could not parse JSON from text: {text[:200]}...")
+                
+            except json.JSONDecodeError as e:
+                if attempt == 0:
+                    print(f"   ⚠️  JSON parsing failed: {e}, attempting fixes...")
+                    # Try to fix common issues
+                    # Remove trailing commas
+                    text = re.sub(r',(\s*[}\]])', r'\1', text)
+                    # Fix missing commas after } or ]
+                    text = re.sub(r'([}\]])\s*\n\s*(["{[])', r'\1,\2', text)
+                    # Remove comments (// and /* */)
+                    text = re.sub(r'//.*$', '', text, flags=re.MULTILINE)
+                    text = re.sub(r'/\*.*?\*/', '', text, flags=re.DOTALL)
+                    continue
+                elif attempt == 1:
+                    print(f"   ⚠️  Still failing, trying to find valid JSON substring...")
+                    # Try to find the largest valid JSON object
+                    # Count braces to find where JSON likely ends
+                    brace_count = 0
+                    valid_end = -1
+                    for i, char in enumerate(text):
+                        if char == '{':
+                            brace_count += 1
+                        elif char == '}':
+                            brace_count -= 1
+                            if brace_count == 0:
+                                valid_end = i + 1
+                                break
+                    if valid_end > 0:
+                        text = text[:valid_end]
+                        continue
+                else:
+                    # Last attempt failed
+                    print(f"   ❌ All JSON parsing attempts failed")
+                    raise ValueError(f"Could not parse JSON after multiple attempts. Error: {e}")
+        
+        raise ValueError(f"Could not parse JSON from text: {text[:200]}...")
     
     def extract_text_from_pdf(self, pdf_path: str) -> str:
         """Extract text from PDF"""
@@ -824,7 +849,7 @@ class IBMAgenticContractTranslator:
                 # Print summary
                 final_score = quality_evaluation.get('composite_score', {}).get('final_score', 0)
                 grade = quality_evaluation.get('composite_score', {}).get('grade', 'N/A')
-                print(f"✓ Quality Evaluation Complete: Score={final_score:.1f}/95, Grade={grade}")
+                print(f"✓ Quality Evaluation Complete: Score={final_score:.1f}/100, Grade={grade}")
                 
                 # Print metric breakdown
                 print(f"   📊 Functional Completeness: {quality_evaluation.get('metric_1_functional_completeness', {}).get('score', 0)}/100")
@@ -833,13 +858,29 @@ class IBMAgenticContractTranslator:
                 print(f"   📊 Business Logic Fidelity: {quality_evaluation.get('metric_4_business_logic', {}).get('score', 0)}/100")
                 print(f"   📊 Code Quality: {quality_evaluation.get('metric_5_code_quality', {}).get('score', 0)}/100")
                 
+                # Check Solidity compilation
+                print(f"\n   🔍 Checking Solidity compilation...")
+                compiler_checker = SolidityCompilationChecker()
+                compilation_result = compiler_checker.check_compilation(solidity_code)
+                quality_evaluation['compilation_check'] = compilation_result
+                
+                if compilation_result['compiles'] is None:
+                    print(f"   ⚠️  {compilation_result['error_message']}")
+                elif compilation_result['compiles']:
+                    warnings_text = f" ({len(compilation_result['warnings'])} warnings)" if compilation_result['warnings'] else ""
+                    print(f"   ✅ Contract compiles successfully{warnings_text}")
+                else:
+                    error_preview = compilation_result['error_message'][:100] + "..." if len(compilation_result['error_message']) > 100 else compilation_result['error_message']
+                    print(f"   ❌ Compilation failed: {error_preview}")
+                
             except Exception as e:
                 print(f"   ⚠️  Quality evaluation failed: {e}")
                 import traceback
                 traceback.print_exc()
                 quality_evaluation = {
                     "error": str(e),
-                    "composite_score": {"final_score": 0, "grade": "F"}
+                    "composite_score": {"final_score": 0, "grade": "F"},
+                    "compilation_check": {"compiles": None, "error_message": "Quality evaluation failed"}
                 }
                 results['quality_evaluation'] = quality_evaluation
             
@@ -848,7 +889,7 @@ class IBMAgenticContractTranslator:
                 'status': 'complete',
                 'data': {
                     'title': 'Quality Evaluation',
-                    'message': f"Score: {quality_evaluation.get('composite_score', {}).get('final_score', 0):.1f}/95, Grade: {quality_evaluation.get('composite_score', {}).get('grade', 'N/A')}",
+                    'message': f"Score: {quality_evaluation.get('composite_score', {}).get('final_score', 0):.1f}/100, Grade: {quality_evaluation.get('composite_score', {}).get('grade', 'N/A')}",
                     'quality_evaluation': quality_evaluation
                 }
             }
@@ -980,7 +1021,7 @@ class IBMAgenticContractTranslator:
                 # Print summary
                 final_score = quality_evaluation.get('composite_score', {}).get('final_score', 0)
                 grade = quality_evaluation.get('composite_score', {}).get('grade', 'N/A')
-                print(f"✓ Quality Evaluation Complete: Score={final_score:.1f}/95, Grade={grade}")
+                print(f"✓ Quality Evaluation Complete: Score={final_score:.1f}/100, Grade={grade}")
                 
                 # Print metric breakdown
                 print(f"   Functional Completeness: {quality_evaluation.get('metric_1_functional_completeness', {}).get('score', 0)}/100")
@@ -1004,7 +1045,7 @@ class IBMAgenticContractTranslator:
                 'status': 'complete',
                 'data': {
                     'title': 'Quality Evaluation',
-                    'message': f"Score: {quality_evaluation.get('composite_score', {}).get('final_score', 0):.1f}/95, Grade: {quality_evaluation.get('composite_score', {}).get('grade', 'N/A')}",
+                    'message': f"Score: {quality_evaluation.get('composite_score', {}).get('final_score', 0):.1f}/100, Grade: {quality_evaluation.get('composite_score', {}).get('grade', 'N/A')}",
                     'quality_evaluation': quality_evaluation
                 }
             }
@@ -1015,7 +1056,91 @@ class IBMAgenticContractTranslator:
         print("\n" + "="*70)
         print("✅ TRANSLATION COMPLETE")
         print("="*70)
-
+    
+    def evaluate_ground_truth(self, ground_truth_code: str, schema, contract_name: str = "GroundTruth") -> Dict:
+        """
+        Evaluate ground truth Solidity code using the quality evaluator
+        
+        Args:
+            ground_truth_code: Ground truth Solidity code
+            schema: Contract schema
+            contract_name: Name for the evaluation
+            
+        Returns:
+            Quality evaluation results
+        """
+        print(f"\n{'='*70}")
+        print(f"EVALUATING GROUND TRUTH CODE")
+        print(f"{'='*70}")
+        
+        # Use the quality evaluator agent
+        task_desc = create_quality_evaluation_task_description(ground_truth_code, schema, contract_name)
+        task = Task(description=task_desc, expected_output="Quality evaluation JSON", agent=self.quality_evaluator_agent)
+        crew = Crew(agents=[self.quality_evaluator_agent], tasks=[task], verbose=False)
+        
+        try:
+            result_raw = crew.kickoff()
+            result_text = str(result_raw.raw) if hasattr(result_raw, 'raw') else str(result_raw)
+            
+            try:
+                quality_evaluation = self._extract_json(result_text, dict)
+            except ValueError as json_err:
+                # If JSON parsing completely fails, save the raw output for debugging
+                print(f"   ⚠️  JSON parsing failed completely, saving raw output for debugging")
+                import tempfile
+                with tempfile.NamedTemporaryFile(mode='w', suffix='_gt_eval_failed.txt', delete=False, encoding='utf-8') as f:
+                    f.write(result_text)
+                    print(f"   📝 Raw output saved to: {f.name}")
+                
+                # Return minimal evaluation structure
+                return {
+                    "error": str(json_err),
+                    "composite_score": {"final_score": 0, "grade": "F"},
+                    "metric_1_functional_completeness": {"score": 0},
+                    "metric_2_variable_fidelity": {"score": 0},
+                    "metric_3_state_machine": {"score": 0},
+                    "metric_4_business_logic": {"score": 0},
+                    "metric_5_code_quality": {"score": 0},
+                    "compilation_check": {"compiles": None, "error_message": "JSON parsing failed"}
+                }
+            
+            # Print summary
+            final_score = quality_evaluation.get('composite_score', {}).get('final_score', 0)
+            grade = quality_evaluation.get('composite_score', {}).get('grade', 'N/A')
+            print(f"✓ Ground Truth Evaluation: Score={final_score:.1f}/100, Grade={grade}")
+            
+            # Print metric breakdown for ground truth (same as generated code)
+            print(f"   📊 Functional Completeness: {quality_evaluation.get('metric_1_functional_completeness', {}).get('score', 0)}/100")
+            print(f"   📊 Variable Fidelity: {quality_evaluation.get('metric_2_variable_fidelity', {}).get('score', 0)}/100")
+            print(f"   📊 State Machine Correctness: {quality_evaluation.get('metric_3_state_machine', {}).get('score', 0)}/100")
+            print(f"   📊 Business Logic Fidelity: {quality_evaluation.get('metric_4_business_logic', {}).get('score', 0)}/100")
+            print(f"   📊 Code Quality: {quality_evaluation.get('metric_5_code_quality', {}).get('score', 0)}/100")
+            
+            # Check compilation
+            compiler_checker = SolidityCompilationChecker()
+            compilation_result = compiler_checker.check_compilation(ground_truth_code)
+            quality_evaluation['compilation_check'] = compilation_result
+            
+            if compilation_result['compiles'] is None:
+                print(f"   ⚠️  {compilation_result['error_message']}")
+            elif compilation_result['compiles']:
+                warnings_text = f" ({len(compilation_result['warnings'])} warnings)" if compilation_result['warnings'] else ""
+                print(f"   ✅ Ground truth compiles successfully{warnings_text}")
+            else:
+                error_preview = compilation_result['error_message'][:100] + "..." if len(compilation_result['error_message']) > 100 else compilation_result['error_message']
+                print(f"   ❌ Compilation failed: {error_preview}")
+            
+            return quality_evaluation
+            
+        except Exception as e:
+            print(f"   ⚠️  Ground truth evaluation failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "error": str(e),
+                "composite_score": {"final_score": 0, "grade": "F"},
+                "compilation_check": {"compiles": None, "error_message": "Evaluation failed"}
+            }
     
     def translate_contract(
         self, 

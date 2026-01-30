@@ -342,10 +342,13 @@ def translate_stream():
         # Check if text contract or PDF file provided
         contract_text = request.form.get('contract_text')
         contract_type = request.form.get('contract_type', 'other')
+        ground_truth_code = request.form.get('ground_truth_code', '')
         
         if contract_text:
             # TEXT CONTRACT MODE (NEW)
             print(f"📝 Processing text contract ({len(contract_text)} chars, type: {contract_type})")
+            if ground_truth_code:
+                print(f"📋 Ground truth code provided ({len(ground_truth_code)} chars)")
             
             # Create a session ID for this translation
             session_id = str(uuid.uuid4())
@@ -404,12 +407,24 @@ def translate_stream():
                 # Get the input path (either text file or PDF)
                 input_path = translation_sessions[session_id]['temp_path']
                 
+                # Store schema and results for ground truth evaluation
+                schema = None
+                generated_quality = None
+                
                 for phase_update in translator.translate_contract_streaming(
                     input_path=input_path,
                     output_dir=output_directory,
                     require_audit_approval=False,
                     generate_mcp_server=True
                 ):
+                    # Capture schema from Phase 2
+                    if phase_update['phase'] == 2 and 'schema' in phase_update.get('data', {}):
+                        schema = phase_update['data']['schema']
+                    
+                    # Capture quality evaluation from Phase 7
+                    if phase_update['phase'] == 7 and 'quality_evaluation' in phase_update.get('data', {}):
+                        generated_quality = phase_update['data']['quality_evaluation']
+                    
                     # Send each phase update as an SSE event
                     print(f"📡 Streaming phase {phase_update['phase']}...")
                     
@@ -436,6 +451,57 @@ def translate_stream():
                     yield f"data: {json.dumps(phase_update)}\n\n"
                 
                 print("✓ Translation streaming completed")
+                
+                # Evaluate ground truth if provided
+                if ground_truth_code and ground_truth_code.strip():
+                    print("📊 Evaluating ground truth code for comparison...")
+                    try:
+                        if schema and generated_quality:
+                            # Evaluate ground truth using same quality metrics
+                            gt_evaluation = translator.evaluate_ground_truth(
+                                ground_truth_code=ground_truth_code,
+                                schema=schema,
+                                contract_name="GroundTruthContract"
+                            )
+                            
+                            # Calculate delta
+                            generated_score = generated_quality.get('composite_score', {}).get('final_score', 0)
+                            ground_truth_score = gt_evaluation.get('composite_score', {}).get('final_score', 0)
+                            score_delta = generated_score - ground_truth_score
+                            
+                            # Extract individual metric scores for comparison table
+                            gt_metrics = {
+                                'functional_completeness': gt_evaluation.get('metric_1_functional_completeness', {}).get('score', 0),
+                                'variable_fidelity': gt_evaluation.get('metric_2_variable_fidelity', {}).get('score', 0),
+                                'state_machine': gt_evaluation.get('metric_3_state_machine', {}).get('score', 0),
+                                'business_logic': gt_evaluation.get('metric_4_business_logic', {}).get('score', 0),
+                                'code_quality': gt_evaluation.get('metric_5_code_quality', {}).get('score', 0)
+                            }
+                            
+                            # Send ground truth comparison event
+                            gt_event = {
+                                'phase': 'ground_truth',
+                                'status': 'complete',
+                                'data': {
+                                    'generated_score': generated_score,
+                                    'ground_truth_score': ground_truth_score,
+                                    'score_delta': score_delta,
+                                    'metrics': gt_metrics,
+                                    'ground_truth_evaluation': gt_evaluation,
+                                    'comparison': {
+                                        'result': 'Generated is better' if score_delta > 0 else 'Ground truth is better' if score_delta < 0 else 'Equal performance',
+                                        'delta_abs': abs(score_delta)
+                                    }
+                                }
+                            }
+                            yield f"data: {json.dumps(gt_event)}\n\n"
+                            print(f"✓ Ground truth evaluation complete: GT={ground_truth_score:.1f}, Gen={generated_score:.1f}, Delta={score_delta:+.1f}")
+                        else:
+                            print("⚠️ Cannot evaluate ground truth: schema or quality evaluation missing")
+                    except Exception as gt_error:
+                        print(f"⚠️ Ground truth evaluation error: {str(gt_error)}")
+                        import traceback
+                        traceback.print_exc()
                 
             except Exception as e:
                 print(f"❌ Translation error: {str(e)}")
@@ -922,7 +988,9 @@ def batch_translate():
                             phase_times[f'phase_{phase}'] = time.time() - start_time
                         
                         # Store phase results
-                        if phase == 3 and 'solidity' in data_payload:
+                        if phase == 2 and 'schema' in data_payload:
+                            phase_data['schema'] = data_payload['schema']
+                        elif phase == 3 and 'solidity' in data_payload:
                             phase_data['solidity'] = data_payload['solidity']
                         elif phase == 4 and 'audit' in data_payload:
                             phase_data['audit'] = data_payload['audit']
@@ -937,9 +1005,37 @@ def batch_translate():
                     end_time = time.time()
                     latency = end_time - start_time
                     
-                    # Extract quality scores
+                    # Extract quality scores for generated code
                     quality_eval = phase_data.get('quality', {})
                     composite_score = quality_eval.get('composite_score', {})
+                    compilation_check = quality_eval.get('compilation_check', {})
+                    
+                    # Evaluate ground truth code if available
+                    ground_truth_code = contract.get('code', '')
+                    ground_truth_eval = None
+                    ground_truth_score = None
+                    ground_truth_compiles = None
+                    score_delta = None
+                    
+                    if ground_truth_code and ground_truth_code.strip():
+                        print(f"   📋 Evaluating ground truth code...")
+                        yield f"data: {json.dumps({'type': 'contract_phase', 'contract': contract_num, 'phase': 'ground_truth', 'status': 'evaluating'})}\n\n"
+                        
+                        # Get schema from phase_data
+                        schema = phase_data.get('schema')
+                        if schema:
+                            ground_truth_eval = translator.evaluate_ground_truth(ground_truth_code, schema, f"Contract_{contract_num}")
+                            ground_truth_composite = ground_truth_eval.get('composite_score', {})
+                            ground_truth_score = ground_truth_composite.get('final_score', 0)
+                            ground_truth_compiles = ground_truth_eval.get('compilation_check', {}).get('compiles')
+                            
+                            # Calculate score delta (positive means generated is better)
+                            generated_score = composite_score.get('final_score', 0)
+                            score_delta = generated_score - ground_truth_score
+                            
+                            print(f"   📊 Ground Truth Score: {ground_truth_score:.1f}/100")
+                            print(f"   📊 Generated Score: {generated_score:.1f}/100")
+                            print(f"   📊 Delta: {score_delta:+.1f} ({'Generated better' if score_delta > 0 else 'Ground truth better' if score_delta < 0 else 'Equal'})")
                     
                     # Save individual contract results
                     contract_result = {
@@ -949,9 +1045,20 @@ def batch_translate():
                         'contract_text': contract_text[:500],  # Truncated for storage
                         'latency_seconds': latency,
                         'phase_times': phase_times,
+                        'generated_evaluation': quality_eval,
+                        'generated_score': composite_score.get('final_score', 0),
+                        'generated_grade': composite_score.get('grade', 'N/A'),
+                        'generated_compiles': compilation_check.get('compiles'),
+                        'ground_truth_evaluation': ground_truth_eval,
+                        'ground_truth_score': ground_truth_score,
+                        'ground_truth_compiles': ground_truth_compiles,
+                        'score_delta': score_delta,
+                        # Legacy fields for backward compatibility
                         'quality_evaluation': quality_eval,
                         'final_score': composite_score.get('final_score', 0),
                         'grade': composite_score.get('grade', 'N/A'),
+                        'compiles': compilation_check.get('compiles'),
+                        'compilation_error': compilation_check.get('error_message'),
                         'metric_scores': {
                             'functional_completeness': quality_eval.get('metric_1_functional_completeness', {}).get('score', 0),
                             'variable_fidelity': quality_eval.get('metric_2_variable_fidelity', {}).get('score', 0),
@@ -960,6 +1067,7 @@ def batch_translate():
                             'code_quality': quality_eval.get('metric_5_code_quality', {}).get('score', 0)
                         },
                         'solidity_code': phase_data.get('solidity', ''),
+                        'ground_truth_code': ground_truth_code,
                         'audit_report': phase_data.get('audit', {}),
                         'abi': phase_data.get('abi', '')
                     }
@@ -1013,6 +1121,30 @@ def batch_translate():
                     grade = result['grade']
                     grade_counts[grade] = grade_counts.get(grade, 0) + 1
                 
+                # Compilation statistics
+                compilation_stats = {
+                    'total_checked': sum(1 for r in batch_results if r.get('compiles') is not None),
+                    'successful': sum(1 for r in batch_results if r.get('compiles') is True),
+                    'failed': sum(1 for r in batch_results if r.get('compiles') is False),
+                    'not_checked': sum(1 for r in batch_results if r.get('compiles') is None)
+                }
+                if compilation_stats['total_checked'] > 0:
+                    compilation_stats['success_rate'] = (compilation_stats['successful'] / compilation_stats['total_checked']) * 100
+                else:
+                    compilation_stats['success_rate'] = 0
+                
+                # Ground truth comparison statistics
+                results_with_gt = [r for r in batch_results if r.get('ground_truth_score') is not None]
+                ground_truth_stats = {
+                    'total_compared': len(results_with_gt),
+                    'avg_generated_score': sum(r['generated_score'] for r in results_with_gt) / len(results_with_gt) if results_with_gt else 0,
+                    'avg_ground_truth_score': sum(r['ground_truth_score'] for r in results_with_gt) / len(results_with_gt) if results_with_gt else 0,
+                    'avg_score_delta': sum(r['score_delta'] for r in results_with_gt) / len(results_with_gt) if results_with_gt else 0,
+                    'generated_better_count': sum(1 for r in results_with_gt if r.get('score_delta', 0) > 0),
+                    'ground_truth_better_count': sum(1 for r in results_with_gt if r.get('score_delta', 0) < 0),
+                    'equal_count': sum(1 for r in results_with_gt if r.get('score_delta', 0) == 0)
+                }
+                
                 # Save aggregate results
                 aggregate_results = {
                     'batch_id': batch_id,
@@ -1025,7 +1157,9 @@ def batch_translate():
                         'average_latency': avg_latency,
                         'total_time': sum(r['latency_seconds'] for r in batch_results),
                         'metric_averages': metric_averages,
-                        'grade_distribution': grade_counts
+                        'grade_distribution': grade_counts,
+                        'compilation_stats': compilation_stats,
+                        'ground_truth_comparison': ground_truth_stats
                     },
                     'individual_results': [
                         {
@@ -1033,7 +1167,17 @@ def batch_translate():
                             'score': r['final_score'],
                             'grade': r['grade'],
                             'latency': r['latency_seconds'],
-                            'metrics': r['metric_scores']
+                            'compiles': r.get('compiles'),
+                            'ground_truth_score': r.get('ground_truth_score'),
+                            'score_delta': r.get('score_delta'),
+                            'metrics': r['metric_scores'],
+                            'ground_truth_metrics': {
+                                'functional_completeness': r.get('ground_truth_evaluation', {}).get('metric_1_functional_completeness', {}).get('score', 0),
+                                'variable_fidelity': r.get('ground_truth_evaluation', {}).get('metric_2_variable_fidelity', {}).get('score', 0),
+                                'state_machine': r.get('ground_truth_evaluation', {}).get('metric_3_state_machine', {}).get('score', 0),
+                                'business_logic': r.get('ground_truth_evaluation', {}).get('metric_4_business_logic', {}).get('score', 0),
+                                'code_quality': r.get('ground_truth_evaluation', {}).get('metric_5_code_quality', {}).get('score', 0)
+                            } if r.get('ground_truth_evaluation') else None
                         } for r in batch_results
                     ]
                 }

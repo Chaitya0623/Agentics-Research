@@ -94,6 +94,17 @@ class ContractDatasetLoader:
         """
         return contract.get('user_requirement', '')
     
+    def extract_ground_truth_code(self, contract: Dict) -> str:
+        """Extract the ground truth Solidity code from a contract
+        
+        Args:
+            contract: Contract dictionary
+        
+        Returns:
+            Ground truth Solidity code
+        """
+        return contract.get('code', '')
+    
     def get_contract_metadata(self, contract: Dict) -> Dict:
         """Extract metadata from a contract
         

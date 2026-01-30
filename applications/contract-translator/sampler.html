@@ -1,6 +1,8 @@
 <!DOCTYPE html>
 <html>
 <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dataset Contract Sampler & Batch Evaluator</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
@@ -234,6 +236,52 @@
             </div>
         </div>
 
+        <!-- Compilation Statistics -->
+        <div id="compilationStats" style="background: #0f1419; padding: 20px; border-radius: 5px; margin-bottom: 30px; display: none;">
+            <h3 style="color: #00d4ff; margin-top: 0;">Solidity Compilation Statistics</h3>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px;">
+                <div style="text-align: center;">
+                    <div id="compiledCount" style="font-size: 28px; font-weight: bold; color: #00ff88;">--</div>
+                    <div style="color: #888; font-size: 14px;">Compiled Successfully</div>
+                </div>
+                <div style="text-align: center;">
+                    <div id="compiledFailed" style="font-size: 28px; font-weight: bold; color: #ff6b6b;">--</div>
+                    <div style="color: #888; font-size: 14px;">Compilation Failed</div>
+                </div>
+                <div style="text-align: center;">
+                    <div id="compilationRate" style="font-size: 28px; font-weight: bold; color: #00d4ff;">--</div>
+                    <div style="color: #888; font-size: 14px;">Success Rate</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Ground Truth Comparison -->
+        <div id="groundTruthStats" style="background: #0f1419; padding: 20px; border-radius: 5px; margin-bottom: 30px; display: none;">
+            <h3 style="color: #00d4ff; margin-top: 0;">Ground Truth vs Generated Code Comparison</h3>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 15px;">
+                <div style="text-align: center;">
+                    <div id="gtAvgGenerated" style="font-size: 24px; font-weight: bold; color: #00d4ff;">--</div>
+                    <div style="color: #888; font-size: 14px;">Avg Generated Score</div>
+                </div>
+                <div style="text-align: center;">
+                    <div id="gtAvgGroundTruth" style="font-size: 24px; font-weight: bold; color: #ffaa00;">--</div>
+                    <div style="color: #888; font-size: 14px;">Avg Ground Truth Score</div>
+                </div>
+                <div style="text-align: center;">
+                    <div id="gtDelta" style="font-size: 24px; font-weight: bold; color: #fff;">--</div>
+                    <div style="color: #888; font-size: 14px;">Avg Delta</div>
+                </div>
+                <div style="text-align: center;">
+                    <div id="gtBetter" style="font-size: 24px; font-weight: bold; color: #00ff88;">--</div>
+                    <div style="color: #888; font-size: 14px;">Generated Better</div>
+                </div>
+                <div style="text-align: center;">
+                    <div id="gtWorse" style="font-size: 24px; font-weight: bold; color: #ff6b6b;">--</div>
+                    <div style="color: #888; font-size: 14px;">Ground Truth Better</div>
+                </div>
+            </div>
+        </div>
+
         <!-- Charts -->
         <div class="chart-container">
             <h3 style="color: #00d4ff;">Score Distribution</h3>
@@ -245,9 +293,27 @@
             <canvas id="metricScoresChart"></canvas>
         </div>
 
-        <div class="chart-container">
+        <div class="chart-container" style="max-width: 500px; margin: 20px auto;">
             <h3 style="color: #00d4ff;">Grade Distribution</h3>
             <canvas id="gradeDistChart"></canvas>
+        </div>
+
+        <!-- Ground Truth vs Generated Comparison Chart -->
+        <div class="chart-container" id="comparisonChartContainer" style="display: none;">
+            <h3 style="color: #00d4ff;">Ground Truth vs Generated Scores Comparison</h3>
+            <canvas id="comparisonChart"></canvas>
+        </div>
+
+        <!-- Detailed Metric Comparison Chart -->
+        <div class="chart-container" id="metricComparisonContainer" style="display: none;">
+            <h3 style="color: #00d4ff;">Detailed Metric Comparison: Generated vs Ground Truth</h3>
+            <canvas id="metricComparisonChart"></canvas>
+        </div>
+
+        <!-- Delta Visualization Chart -->
+        <div class="chart-container" id="deltaChartContainer" style="display: none;">
+            <h3 style="color: #00d4ff;">Score Delta Analysis (Generated - Ground Truth)</h3>
+            <canvas id="deltaChart"></canvas>
         </div>
 
         <!-- Individual Results Table -->
@@ -256,8 +322,11 @@
             <thead>
                 <tr>
                     <th>#</th>
-                    <th>Score</th>
+                    <th>Gen Score</th>
+                    <th>GT Score</th>
+                    <th>Delta</th>
                     <th>Grade</th>
+                    <th>Compiled</th>
                     <th>Latency</th>
                     <th>Func Complete</th>
                     <th>Var Fidelity</th>
@@ -358,6 +427,14 @@
             localStorage.setItem('contract_text', currentContract.user_requirement);
             localStorage.setItem('contract_type', 'other');
             
+            // Also save ground truth code for comparison
+            if (currentContract.reference_code) {
+                localStorage.setItem('ground_truth_code', currentContract.reference_code);
+                console.log(`✓ Saved ground truth code (${currentContract.reference_code.length} chars) to localStorage`);
+            } else {
+                console.warn('⚠️ No reference_code found in currentContract:', currentContract);
+            }
+            
             console.log('Saving to localStorage and opening demo...');
             window.open('demo.html', '_blank');
             alert('Contract loaded into demo! Check the new tab.');
@@ -391,12 +468,7 @@
                 statistics: {}
             };
             
-            // Start SSE connection
-            batchEventSource = new EventSource(`http://localhost:5000/api/batch-translate?num_contracts=${numContracts}`, {
-                method: 'POST'
-            });
-            
-            // Use fetch with SSE manually
+            // Use fetch with SSE
             fetch('http://localhost:5000/api/batch-translate', {
                 method: 'POST',
                 headers: {
@@ -505,6 +577,31 @@
             document.getElementById('avgLatency').textContent = stats.average_latency.toFixed(1);
             document.getElementById('totalTime').textContent = stats.total_time.toFixed(1);
             
+            // Display compilation statistics if available
+            if (stats.compilation_stats) {
+                const compStats = stats.compilation_stats;
+                document.getElementById('compilationStats').style.display = 'block';
+                document.getElementById('compiledCount').textContent = compStats.successful || 0;
+                document.getElementById('compiledFailed').textContent = compStats.failed || 0;
+                document.getElementById('compilationRate').textContent = `${compStats.success_rate.toFixed(1)}%`;
+            }
+            
+            // Display ground truth comparison if available
+            if (stats.ground_truth_comparison && stats.ground_truth_comparison.total_compared > 0) {
+                const gtStats = stats.ground_truth_comparison;
+                document.getElementById('groundTruthStats').style.display = 'block';
+                document.getElementById('gtAvgGenerated').textContent = gtStats.avg_generated_score.toFixed(1);
+                document.getElementById('gtAvgGroundTruth').textContent = gtStats.avg_ground_truth_score.toFixed(1);
+                
+                const delta = gtStats.avg_score_delta;
+                const deltaEl = document.getElementById('gtDelta');
+                deltaEl.textContent = `${delta > 0 ? '+' : ''}${delta.toFixed(1)}`;
+                deltaEl.style.color = delta > 0 ? '#00ff88' : (delta < 0 ? '#ff6b6b' : '#fff');
+                
+                document.getElementById('gtBetter').textContent = gtStats.generated_better_count || 0;
+                document.getElementById('gtWorse').textContent = gtStats.ground_truth_better_count || 0;
+            }
+            
             // Create score distribution chart
             createScoreDistributionChart(results.individual_results);
             
@@ -513,6 +610,13 @@
             
             // Create grade distribution chart
             createGradeDistributionChart(stats.grade_distribution);
+            
+            // Create ground truth comparison chart if available
+            if (stats.ground_truth_comparison && stats.ground_truth_comparison.total_compared > 0) {
+                createComparisonChart(results.individual_results);
+                createMetricComparisonChart(results.individual_results);
+                createDeltaChart(results.individual_results);
+            }
             
             // Populate results table
             populateResultsTable(results.individual_results);
@@ -640,16 +744,322 @@
             });
         }
 
+        function createComparisonChart(results) {
+            // Filter results that have ground truth scores
+            const withGT = results.filter(r => r.ground_truth_score !== null && r.ground_truth_score !== undefined);
+            
+            if (withGT.length === 0) {
+                console.log('No ground truth data available for comparison chart');
+                return;
+            }
+            
+            console.log(`Creating comparison chart with ${withGT.length} contracts`);
+            
+            // Show the chart container
+            document.getElementById('comparisonChartContainer').style.display = 'block';
+            
+            const ctx = document.getElementById('comparisonChart').getContext('2d');
+            
+            if (charts.comparison) charts.comparison.destroy();
+            
+            charts.comparison = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: withGT.map(r => `#${r.contract_id}`),
+                    datasets: [
+                        {
+                            label: 'Generated Code',
+                            data: withGT.map(r => r.score),
+                            backgroundColor: '#00d4ff',
+                            borderColor: '#00d4ff',
+                            borderWidth: 1
+                        },
+                        {
+                            label: 'Ground Truth',
+                            data: withGT.map(r => r.ground_truth_score),
+                            backgroundColor: '#ffaa00',
+                            borderColor: '#ffaa00',
+                            borderWidth: 1
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: { 
+                            labels: { color: '#eee' },
+                            display: true,
+                            position: 'top'
+                        },
+                        tooltip: {
+                            callbacks: {
+                                afterLabel: function(context) {
+                                    const idx = context.dataIndex;
+                                    const result = withGT[idx];
+                                    const delta = result.score_delta;
+                                    if (delta !== null && delta !== undefined) {
+                                        return `Delta: ${delta > 0 ? '+' : ''}${delta.toFixed(1)}`;
+                                    }
+                                    return '';
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        y: { 
+                            beginAtZero: true, 
+                            max: 100,
+                            ticks: { color: '#eee' },
+                            grid: { color: '#333' },
+                            title: {
+                                display: true,
+                                text: 'Score',
+                                color: '#eee'
+                            }
+                        },
+                        x: { 
+                            ticks: { color: '#eee' },
+                            grid: { color: '#333' },
+                            title: {
+                                display: true,
+                                text: 'Contract',
+                                color: '#eee'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function createMetricComparisonChart(results) {
+            // Filter results that have ground truth scores
+            const withGT = results.filter(r => r.ground_truth_score !== null && r.ground_truth_score !== undefined);
+            
+            if (withGT.length === 0) return;
+            
+            console.log('Creating metric comparison chart');
+            
+            // Calculate average metrics for generated and ground truth
+            const avgGenerated = {
+                funcComplete: 0,
+                varFidelity: 0,
+                stateMachine: 0,
+                businessLogic: 0,
+                codeQuality: 0
+            };
+            
+            const avgGroundTruth = {
+                funcComplete: 0,
+                varFidelity: 0,
+                stateMachine: 0,
+                businessLogic: 0,
+                codeQuality: 0
+            };
+            
+            withGT.forEach(r => {
+                avgGenerated.funcComplete += r.metrics.functional_completeness;
+                avgGenerated.varFidelity += r.metrics.variable_fidelity;
+                avgGenerated.stateMachine += r.metrics.state_machine;
+                avgGenerated.businessLogic += r.metrics.business_logic;
+                avgGenerated.codeQuality += r.metrics.code_quality;
+                
+                // Ground truth metrics (need to add these to the response)
+                if (r.ground_truth_metrics) {
+                    avgGroundTruth.funcComplete += r.ground_truth_metrics.functional_completeness || 0;
+                    avgGroundTruth.varFidelity += r.ground_truth_metrics.variable_fidelity || 0;
+                    avgGroundTruth.stateMachine += r.ground_truth_metrics.state_machine || 0;
+                    avgGroundTruth.businessLogic += r.ground_truth_metrics.business_logic || 0;
+                    avgGroundTruth.codeQuality += r.ground_truth_metrics.code_quality || 0;
+                }
+            });
+            
+            const count = withGT.length;
+            Object.keys(avgGenerated).forEach(key => {
+                avgGenerated[key] /= count;
+                avgGroundTruth[key] /= count;
+            });
+            
+            // Show the chart container
+            document.getElementById('metricComparisonContainer').style.display = 'block';
+            
+            const ctx = document.getElementById('metricComparisonChart').getContext('2d');
+            
+            if (charts.metricComparison) charts.metricComparison.destroy();
+            
+            charts.metricComparison = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: ['Functional\nCompleteness', 'Variable\nFidelity', 'State\nMachine', 'Business\nLogic', 'Code\nQuality'],
+                    datasets: [
+                        {
+                            label: 'Generated Code',
+                            data: [
+                                avgGenerated.funcComplete,
+                                avgGenerated.varFidelity,
+                                avgGenerated.stateMachine,
+                                avgGenerated.businessLogic,
+                                avgGenerated.codeQuality
+                            ],
+                            backgroundColor: '#00d4ff',
+                            borderColor: '#00d4ff',
+                            borderWidth: 1
+                        },
+                        {
+                            label: 'Ground Truth',
+                            data: [
+                                avgGroundTruth.funcComplete,
+                                avgGroundTruth.varFidelity,
+                                avgGroundTruth.stateMachine,
+                                avgGroundTruth.businessLogic,
+                                avgGroundTruth.codeQuality
+                            ],
+                            backgroundColor: '#ffaa00',
+                            borderColor: '#ffaa00',
+                            borderWidth: 1
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: { 
+                            labels: { color: '#eee' },
+                            display: true,
+                            position: 'top'
+                        }
+                    },
+                    scales: {
+                        y: { 
+                            beginAtZero: true, 
+                            max: 100,
+                            ticks: { color: '#eee' },
+                            grid: { color: '#333' },
+                            title: {
+                                display: true,
+                                text: 'Average Score',
+                                color: '#eee'
+                            }
+                        },
+                        x: { 
+                            ticks: { color: '#eee' },
+                            grid: { color: '#333' }
+                        }
+                    }
+                }
+            });
+        }
+
+        function createDeltaChart(results) {
+            // Filter results that have ground truth scores
+            const withGT = results.filter(r => r.ground_truth_score !== null && r.ground_truth_score !== undefined && r.score_delta !== null);
+            
+            if (withGT.length === 0) return;
+            
+            console.log('Creating delta chart');
+            
+            // Show the chart container
+            document.getElementById('deltaChartContainer').style.display = 'block';
+            
+            const ctx = document.getElementById('deltaChart').getContext('2d');
+            
+            if (charts.delta) charts.delta.destroy();
+            
+            // Create color array based on positive/negative deltas
+            const colors = withGT.map(r => r.score_delta >= 0 ? '#00ff88' : '#ff6b6b');
+            
+            charts.delta = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: withGT.map(r => `#${r.contract_id}`),
+                    datasets: [
+                        {
+                            label: 'Score Delta (Generated - Ground Truth)',
+                            data: withGT.map(r => r.score_delta),
+                            backgroundColor: colors,
+                            borderColor: colors,
+                            borderWidth: 1
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: { 
+                            labels: { color: '#eee' },
+                            display: true,
+                            position: 'top'
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    const delta = context.parsed.y;
+                                    const result = delta >= 0 ? 'Generated is better' : 'Ground truth is better';
+                                    return `Delta: ${delta > 0 ? '+' : ''}${delta.toFixed(1)} (${result})`;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        y: { 
+                            ticks: { color: '#eee' },
+                            grid: { color: '#333' },
+                            title: {
+                                display: true,
+                                text: 'Score Difference',
+                                color: '#eee'
+                            }
+                        },
+                        x: { 
+                            ticks: { color: '#eee' },
+                            grid: { color: '#333' },
+                            title: {
+                                display: true,
+                                text: 'Contract',
+                                color: '#eee'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
         function populateResultsTable(results) {
             const tbody = document.getElementById('resultsTableBody');
             tbody.innerHTML = '';
             
             results.forEach(result => {
+                // Format compilation status
+                let compileStatus = '?';
+                let compileColor = '#888';
+                if (result.compiles === true) {
+                    compileStatus = 'Yes';
+                    compileColor = '#00ff88';
+                } else if (result.compiles === false) {
+                    compileStatus = 'No';
+                    compileColor = '#ff6b6b';
+                }
+                
+                // Format ground truth score
+                const gtScore = result.ground_truth_score !== null && result.ground_truth_score !== undefined 
+                    ? result.ground_truth_score.toFixed(1) 
+                    : '--';
+                
+                // Format delta
+                let deltaText = '--';
+                let deltaColor = '#888';
+                if (result.score_delta !== null && result.score_delta !== undefined) {
+                    deltaText = `${result.score_delta > 0 ? '+' : ''}${result.score_delta.toFixed(1)}`;
+                    deltaColor = result.score_delta > 0 ? '#00ff88' : (result.score_delta < 0 ? '#ff6b6b' : '#888');
+                }
+                
                 const row = document.createElement('tr');
                 row.innerHTML = `
                     <td>#${result.contract_id}</td>
                     <td><strong>${result.score.toFixed(1)}</strong>/100</td>
+                    <td style="color: #ffaa00;"><strong>${gtScore}</strong></td>
+                    <td style="color: ${deltaColor}; font-weight: bold;">${deltaText}</td>
                     <td><span class="grade-${result.grade}">${result.grade}</span></td>
+                    <td style="color: ${compileColor}; font-weight: bold;">${compileStatus}</td>
                     <td>${result.latency.toFixed(1)}s</td>
                     <td>${result.metrics.functional_completeness.toFixed(1)}</td>
                     <td>${result.metrics.variable_fidelity.toFixed(1)}</td>
